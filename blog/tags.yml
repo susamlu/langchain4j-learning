@@ -17,3 +17,18 @@ hola:
   label: Hola
   permalink: /hola
   description: Hola tag description
+
+langchain4j:
+  label: LangChain4j
+  permalink: /langchain4j
+  description: LangChain4j 入门、集成与最佳实践
+
+java:
+  label: Java
+  permalink: /java
+  description: Java 相关内容（JDK、构建、生态与工程实践）
+
+llm:
+  label: LLM
+  permalink: /llm
+  description: 大语言模型（LLM）相关的应用与工程实践

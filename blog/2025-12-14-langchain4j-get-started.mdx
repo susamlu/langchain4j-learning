@@ -1,0 +1,201 @@
+---
+slug: langchain4j-get-started
+title: LangChain4j 快速入门
+authors: [susamlu]
+tags: [langchain4j, java, llm]
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+LangChain4j 是面向 Java/Kotlin 开发者的大语言模型工具链：它通过标准化 API 封装模型对话、文档处理、检索增强等能力，降低大模型应用的开发门槛。本文将通过一个极简的 `Hello World` 示例，带你跑通 LangChain4j 的接入流程。
+
+<!-- truncate -->
+
+## 1. 前置条件
+
+- **JDK 版本**：LangChain4j 最低兼容 JDK 17，建议直接使用 JDK 17 或以上稳定版本，以避免编译与运行阶段出现兼容性问题。
+- **构建工具**：Maven 或 Gradle。
+
+## 2. 添加依赖
+
+LangChain4j 采用“模块化”集成：不同的模型厂商、向量库、Embedding 等组件都对应独立依赖。下面以 OpenAI 为例：
+
+:::note `langchain4j` 是否必需？
+本文的最小示例仅调用 `OpenAiChatModel.chat()`，通常引入 `langchain4j-open-ai` 即可；当你要用更上层的 **AI Services API** 时，再额外引入 `langchain4j`。参考：[LangChain4j Get Started](https://docs.langchain4j.dev/get-started)
+:::
+
+<Tabs groupId="buildTool">
+<TabItem value="maven" label="Maven（pom.xml）" default>
+
+```xml title="pom.xml（OpenAI 集成〔必选〕 + langchain4j〔AI Services 可选〕）"
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j-open-ai</artifactId>
+    <version>1.9.1</version>
+</dependency>
+
+<!-- 可选：使用 AI Services API 时再引入 langchain4j -->
+<!--
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j</artifactId>
+    <version>1.9.1</version>
+</dependency>
+-->
+```
+
+</TabItem>
+<TabItem value="gradle" label="Gradle（build.gradle）">
+
+```gradle title="build.gradle（OpenAI 集成〔必选〕 + langchain4j〔AI Services 可选〕）"
+implementation 'dev.langchain4j:langchain4j-open-ai:1.9.1'
+// implementation 'dev.langchain4j:langchain4j:1.9.1' // 可选：AI Services API
+```
+
+</TabItem>
+</Tabs>
+
+<details>
+<summary><b>配置 BOM</b></summary>
+
+同时引入多个 LangChain4j 模块时，通过 BOM 管理依赖可有效避免因版本不一致而引发的依赖冲突问题：
+
+```xml title="pom.xml（BOM：统一 LangChain4j 模块版本）"
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-bom</artifactId>
+            <version>1.9.1</version>
+            <type>pom</type>
+            <scope>import</scope>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+```
+
+:::caution
+虽然 BOM 版本是 `1.9.1`，但部分模块仍可能带 beta 版本号，未来可能存在破坏性变更；升级前建议先阅读变更说明。
+:::
+
+</details>
+
+## 3. 配置 API Key
+
+建议将 API Key 配置在环境变量中，避免因误提交代码导致密钥泄露。
+
+```java
+String apiKey = System.getenv("OPENAI_API_KEY");
+```
+
+在本机可以这样设置：
+
+```bash title="macOS / Linux"
+export OPENAI_API_KEY="YOUR_KEY"
+```
+
+:::tip
+如果你通过 IDE（如 IntelliJ IDEA）直接运行 `main()`，请确认运行配置里已注入环境变量 `OPENAI_API_KEY`；否则即便你在命令行里设置过，该进程也可能读不到。
+:::
+
+## 4. 第一个示例
+
+创建 `OpenAiChatModel` 并调用 `chat()`：
+
+```java title="HelloLangChain4j.java（最小可运行示例）"
+import dev.langchain4j.model.openai.OpenAiChatModel;
+
+public class HelloLangChain4j {
+    public static void main(String[] args) {
+        String apiKey = System.getenv("OPENAI_API_KEY");
+
+        OpenAiChatModel model = OpenAiChatModel.builder()
+                .apiKey(apiKey)
+                .modelName("gpt-4o-mini")
+                .build();
+
+        String answer = model.chat("Say 'Hello World'");
+        System.out.println(answer);
+    }
+}
+```
+
+:::tip 预期输出
+正常情况下，控制台会输出一段文本，通常是 `Hello World`（或语义等价的内容，具体文案可能因模型而略有差异）。
+:::
+
+:::note 如果没有输出/报错了怎么办？
+- **`OPENAI_API_KEY` 为空**：确认环境变量在运行该 Java 进程的环境里可见（IDE 场景优先检查 Run Configuration）。
+- **401/鉴权失败**：Key 不正确、无权限或被代理改写。
+- **超时/网络错误**：检查代理、公司网络策略和目标域名连通性。
+:::
+
+<details>
+<summary><b>demo key</b></summary>
+
+如果你暂时没有 OpenAI Key，官方提供了 demo key，可用于快速验证调用链路。但需注意该密钥存在以下限制：配额有限、仅支持特定模型（`gpt-4o-mini`）、请求需通过官方代理转发。
+
+```java title="HelloLangChain4jDemoKey.java（用 demo key 演示）"
+import dev.langchain4j.model.openai.OpenAiChatModel;
+
+public class HelloLangChain4jDemoKey {
+    public static void main(String[] args) {
+        OpenAiChatModel model = OpenAiChatModel.builder()
+                .baseUrl("http://langchain4j.dev/demo/openai/v1")
+                .apiKey("demo")
+                .modelName("gpt-4o-mini")
+                .build();
+
+        String answer = model.chat("Say 'Hello World'");
+        System.out.println(answer);
+    }
+}
+```
+
+</details>
+
+<details>
+<summary><b>SNAPSHOT</b></summary>
+
+如需使用 SNAPSHOT 版本，需要先配置 snapshot 仓库，再指定 `x.x.x-SNAPSHOT` 格式的快照版本号（例如 `1.9.1-SNAPSHOT`，其中 `x.x.x` 是主版本号、次版本号和修订号）。SNAPSHOT 适合用来验证新特性或修复，但由于内容持续迭代，稳定性无法保障，**不建议直接用于生产环境**。
+
+- **适用场景**：需验证最新修复的问题、或尝鲜尚未正式发布的新功能时。
+- **禁用场景**：生产环境部署、需要长期固化依赖版本、团队协作需稳定可复现的构建流程时。
+
+```xml title="pom.xml（repositories：启用 SNAPSHOT 仓库）"
+<repositories>
+  <repository>
+    <name>Central Portal Snapshots</name>
+    <id>central-portal-snapshots</id>
+    <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+    <releases>
+      <enabled>false</enabled>
+    </releases>
+    <snapshots>
+      <enabled>true</enabled>
+    </snapshots>
+  </repository>
+</repositories>
+```
+
+```xml title="pom.xml（dependencies：使用 SNAPSHOT 版本）"
+<dependencies>
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j</artifactId>
+        <version>1.9.1-SNAPSHOT</version>
+    </dependency>
+</dependencies>
+```
+
+参考：[LangChain4j Get Started](https://docs.langchain4j.dev/get-started)
+
+</details>
+
+## 进阶指南（从“能跑通”到“可落地”）
+
+- **接口化封装（AI Services API）**：用 LangChain4j 的 AI Services 把 Prompt、参数（温度、最大输出等）封装成 Java 接口，提升可维护性与可测试性，也便于多模型切换/复用。
+- **工程化加固**：为模型调用增加超时、重试、限流，并接入日志与链路追踪（Trace），做到**可控、可观测、可排障**。
+- **交互能力升级**：从单轮对话升级到**带上下文的对话**、**流式输出**、**结构化输出**（例如映射为 POJO），更贴近真实业务交互。
+- **产品化落地**：引入 RAG、向量数据库与工具调用（Tool Calling），让模型能“用你的私有数据”和“做你的业务动作”。
