@@ -24,7 +24,7 @@ LangChain4j 采用“模块化”集成：不同的模型厂商、向量库、Em
 <Tabs groupId="buildTool">
 <TabItem value="maven" label="Maven（pom.xml）" default>
 
-```xml title="pom.xml（OpenAI 集成）"
+```xml title="pom.xml"
 <dependency>
     <groupId>dev.langchain4j</groupId>
     <artifactId>langchain4j-open-ai</artifactId>
@@ -35,7 +35,7 @@ LangChain4j 采用“模块化”集成：不同的模型厂商、向量库、Em
 </TabItem>
 <TabItem value="gradle" label="Gradle（build.gradle）">
 
-```gradle title="build.gradle（OpenAI 集成）"
+```gradle title="build.gradle"
 implementation 'dev.langchain4j:langchain4j-open-ai:1.9.1'
 ```
 
@@ -47,7 +47,7 @@ implementation 'dev.langchain4j:langchain4j-open-ai:1.9.1'
 
 同时引入多个 LangChain4j 模块时，通过 BOM 管理依赖可有效避免因版本不一致而引发的依赖冲突问题：
 
-```xml title="pom.xml（BOM：统一 LangChain4j 模块版本）"
+```xml title="pom.xml"
 <dependencyManagement>
     <dependencies>
         <dependency>
@@ -82,7 +82,7 @@ export OPENAI_API_KEY="YOUR_KEY"
 ```
 
 :::tip
-如果你通过 IDE（如 IntelliJ IDEA）直接运行 `main()`，请确认运行配置里已注入环境变量 `OPENAI_API_KEY`；否则即便你在命令行里设置过，该进程也可能读不到。
+如果你通过 IDE（如 IntelliJ IDEA）直接运行 `main()`，请确认运行配置里已注入环境变量 `OPENAI_API_KEY`；否则即便你在命令行里设置过，该进程也可能读取不到。
 :::
 
 ## 4. 第一个示例
@@ -109,12 +109,6 @@ public class HelloLangChain4j {
 
 :::tip 预期输出
 正常情况下，控制台会输出一段文本，通常是 `Hello World`（或语义等价的内容，具体文案可能因模型而略有差异）。
-:::
-
-:::note 如果没有输出/报错了怎么办？
-- **`OPENAI_API_KEY` 为空**：确认环境变量在运行该 Java 进程的环境里可见（IDE 场景优先检查 Run Configuration）。
-- **401/鉴权失败**：Key 不正确、无权限或被代理改写。
-- **超时/网络错误**：检查代理、公司网络策略和目标域名连通性。
 :::
 
 <details>
@@ -149,7 +143,7 @@ public class HelloLangChain4jDemoKey {
 - **适用场景**：需验证最新修复的问题、或尝鲜尚未正式发布的新功能时。
 - **禁用场景**：生产环境部署、需要长期固化依赖版本、团队协作需稳定可复现的构建流程时。
 
-```xml title="pom.xml（repositories：启用 SNAPSHOT 仓库）"
+```xml title="pom.xml"
 <repositories>
   <repository>
     <name>Central Portal Snapshots</name>
@@ -165,23 +159,23 @@ public class HelloLangChain4jDemoKey {
 </repositories>
 ```
 
-```xml title="pom.xml（dependencies：使用 SNAPSHOT 版本）"
+```xml title="pom.xml"
 <dependencies>
     <dependency>
         <groupId>dev.langchain4j</groupId>
-        <artifactId>langchain4j</artifactId>
+        <artifactId>langchain4j-open-ai</artifactId>
         <version>1.9.1-SNAPSHOT</version>
     </dependency>
 </dependencies>
 ```
 
-参考：[LangChain4j Get Started](https://docs.langchain4j.dev/get-started)
-
 </details>
 
-## 进阶指南（从“能跑通”到“可落地”）
+## 进阶指南
 
-- **接口化封装（AI Services API）**：用 LangChain4j 的 AI Services 把 Prompt、参数（温度、最大输出等）封装成 Java 接口，提升可维护性与可测试性，也便于多模型切换/复用。
-- **工程化加固**：为模型调用增加超时、重试、限流，并接入日志与链路追踪（Trace），做到**可控、可观测、可排障**。
-- **交互能力升级**：从单轮对话升级到**带上下文的对话**、**流式输出**、**结构化输出**（例如映射为 POJO），更贴近真实业务交互。
-- **产品化落地**：引入 RAG、向量数据库与工具调用（Tool Calling），让模型能“用你的私有数据”和“做你的业务动作”。
+- **接口封装（AI Services API）**：用 LangChain4j 的 AI Services 把 Prompt、参数（温度、最大输出等）封装成 Java 接口，提升可维护性与可测试性，也便于多模型切换和复用。
+- **工程加固**：为模型调用增加超时、重试、限流机制，并接入日志与链路追踪（Trace），做到**可控、可观测、可排障**。
+- **交互升级**：从单轮对话升级到**带上下文的对话**、**流式输出**、**结构化输出**（例如映射为 POJO）等，更贴近真实业务交互。
+- **产品落地**：引入 RAG、向量数据库与工具调用（Tool Calling），让模型能“用你的私有数据”和“做你的业务动作”。
+
+官方文档：[LangChain4j Get Started](https://docs.langchain4j.dev/get-started)
