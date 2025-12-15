@@ -21,36 +21,22 @@ LangChain4j 是面向 Java/Kotlin 开发者的大语言模型工具链：它通�
 
 LangChain4j 采用“模块化”集成：不同的模型厂商、向量库、Embedding 等组件都对应独立依赖。下面以 OpenAI 为例：
 
-:::note `langchain4j` 是否必需？
-本文的最小示例仅调用 `OpenAiChatModel.chat()`，通常引入 `langchain4j-open-ai` 即可；当你要用更上层的 **AI Services API** 时，再额外引入 `langchain4j`。参考：[LangChain4j Get Started](https://docs.langchain4j.dev/get-started)
-:::
-
 <Tabs groupId="buildTool">
 <TabItem value="maven" label="Maven（pom.xml）" default>
 
-```xml title="pom.xml（OpenAI 集成〔必选〕 + langchain4j〔AI Services 可选〕）"
+```xml title="pom.xml（OpenAI 集成）"
 <dependency>
     <groupId>dev.langchain4j</groupId>
     <artifactId>langchain4j-open-ai</artifactId>
     <version>1.9.1</version>
 </dependency>
-
-<!-- 可选：使用 AI Services API 时再引入 langchain4j -->
-<!--
-<dependency>
-    <groupId>dev.langchain4j</groupId>
-    <artifactId>langchain4j</artifactId>
-    <version>1.9.1</version>
-</dependency>
--->
 ```
 
 </TabItem>
 <TabItem value="gradle" label="Gradle（build.gradle）">
 
-```gradle title="build.gradle（OpenAI 集成〔必选〕 + langchain4j〔AI Services 可选〕）"
+```gradle title="build.gradle（OpenAI 集成）"
 implementation 'dev.langchain4j:langchain4j-open-ai:1.9.1'
-// implementation 'dev.langchain4j:langchain4j:1.9.1' // 可选：AI Services API
 ```
 
 </TabItem>
@@ -158,7 +144,7 @@ public class HelloLangChain4jDemoKey {
 <details>
 <summary><b>SNAPSHOT</b></summary>
 
-如需使用 SNAPSHOT 版本，需要先配置 snapshot 仓库，再指定 `x.x.x-SNAPSHOT` 格式的快照版本号（例如 `1.9.1-SNAPSHOT`，其中 `x.x.x` 是主版本号、次版本号和修订号）。SNAPSHOT 适合用来验证新特性或修复，但由于内容持续迭代，稳定性无法保障，**不建议直接用于生产环境**。
+如需使用 SNAPSHOT 版本，需要先配置 snapshot 仓库，再指定 `x.x.x-SNAPSHOT` 格式的快照版本号（例如 `1.9.1-SNAPSHOT`）。SNAPSHOT 适合用来验证新特性或修复，但由于内容持续迭代，稳定性无法保障，**不建议直接用于生产环境**。
 
 - **适用场景**：需验证最新修复的问题、或尝鲜尚未正式发布的新功能时。
 - **禁用场景**：生产环境部署、需要长期固化依赖版本、团队协作需稳定可复现的构建流程时。
