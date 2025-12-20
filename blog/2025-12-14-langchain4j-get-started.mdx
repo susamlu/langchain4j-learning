@@ -8,18 +8,18 @@ tags: [langchain4j, java, llm]
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-LangChain4j 是面向 Java/Kotlin 开发者的大语言模型工具链：它通过标准化 API 封装模型对话、文档处理、检索增强等能力，降低大模型应用的开发门槛。本文将通过一个极简的 `Hello World` 示例，带你跑通 LangChain4j 的接入流程。
+LangChain4j 源于 Python 开源项目 `LangChain`，是面向 Java 开发者的 LLM 工具链：它通过标准化 API 封装**模型对话**、**文档处理**、**检索增强**等能力，降低大模型应用的开发门槛。本文将通过一个极简的 `Hello World` 示例，展示 LangChain4j 的接入流程。
 
 <!-- truncate -->
 
 ## 1. 前置条件
 
-- **JDK 版本**：LangChain4j 最低兼容 JDK 17，建议直接使用 JDK 17 或以上稳定版本，以避免编译与运行阶段出现兼容性问题。
+- **JDK 版本**：LangChain4j 最低兼容 JDK 17，建议使用 JDK 17 或以上稳定版本，以免出现编译与运行阶段的兼容性问题。
 - **构建工具**：Maven 或 Gradle。
 
 ## 2. 添加依赖
 
-LangChain4j 采用“模块化”集成：不同的模型厂商、向量库、Embedding 等组件都对应独立依赖。下面以 OpenAI 为例：
+LangChain4j 采用“模块化”集成方式：不同的模型厂商、向量库、Embedding 等组件都对应独立依赖。下面以 OpenAI 为例：
 
 <Tabs groupId="buildTool">
 <TabItem value="maven" label="Maven（pom.xml）" default>
@@ -82,7 +82,7 @@ export OPENAI_API_KEY="YOUR_KEY"
 ```
 
 :::tip
-如果你通过 IDE（如 IntelliJ IDEA）直接运行 `main()`，请确认运行配置里已注入环境变量 `OPENAI_API_KEY`；否则即便你在命令行里设置过，该进程也可能读取不到。
+如果你通过 IDE（如 IntelliJ IDEA）直接运行 `main()`，请确认运行配置里已注入环境变量 `OPENAI_API_KEY`；否则即使你在命令行里设置过，该进程也可能读取不到。
 :::
 
 ## 4. 第一个示例
@@ -140,9 +140,6 @@ public class HelloLangChain4jDemoKey {
 
 如需使用 SNAPSHOT 版本，需要先配置 snapshot 仓库，再指定 `x.x.x-SNAPSHOT` 格式的快照版本号（例如 `1.9.1-SNAPSHOT`）。SNAPSHOT 适合用来验证新特性或修复，但由于内容持续迭代，稳定性无法保障，**不建议直接用于生产环境**。
 
-- **适用场景**：需验证最新修复的问题、或尝鲜尚未正式发布的新功能时。
-- **禁用场景**：生产环境部署、需要长期固化依赖版本、团队协作需稳定可复现的构建流程时。
-
 ```xml title="pom.xml"
 <repositories>
   <repository>
@@ -173,9 +170,9 @@ public class HelloLangChain4jDemoKey {
 
 ## 进阶指南
 
-- **接口封装（AI Services API）**：用 LangChain4j 的 AI Services 把 Prompt、参数（温度、最大输出等）封装成 Java 接口，提升可维护性与可测试性，也便于多模型切换和复用。
+- **接口封装（AI Services API）**：用 LangChain4j 的 AI Services 封装接口，提升应用程序的可维护性与可测试性，同时便于多模型的切换和复用。
 - **工程加固**：为模型调用增加超时、重试、限流机制，并接入日志与链路追踪（Trace），做到**可控、可观测、可排障**。
-- **交互升级**：从单轮对话升级到**带上下文的对话**、**流式输出**、**结构化输出**（例如映射为 POJO）等，更贴近真实业务交互。
-- **产品落地**：引入 RAG、向量数据库与工具调用（Tool Calling），让模型能“用你的私有数据”和“做你的业务动作”。
+- **交互升级**：从单轮对话升级到**多轮对话**、**流式输出**、**结构化输出**（例如映射为 POJO）等，更贴近真实业务交互场景。
+- **产品落地**：引入**向量数据库**、**检索增强生成**（RAG）与**工具调用**（Tool Calling）能力，让模型基于私有数据落地具体业务需求。
 
 官方文档：[LangChain4j Get Started](https://docs.langchain4j.dev/get-started)
