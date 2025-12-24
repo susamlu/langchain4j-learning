@@ -1,5 +1,5 @@
 ---
-slug: langchain4j-chatmodel
+slug: langchain4j-chat-model
 title: LangChain4j 对话模型
 authors: [susamlu]
 tags: [langchain4j, java, llm]
@@ -28,7 +28,7 @@ LangChain4j 按能力维度，将模型能力抽象为以下核心接口类型�
 
 ## 3. 核心组件详解
 
-### 3.1 ChatModel：对话核心接口
+### 3.1 ChatModel
 
 在 LangChain4j 的对话建模体系中，官方更推荐使用 `ChatModel` 作为统一入口（以实际版本与文档为准）。`ChatModel` 的核心优势体现在以下几个方面：
 
@@ -70,7 +70,7 @@ public interface ChatModel {
   - 适用场景：需要精细化配置请求参数的场景（如指定模型名称、调整温度值、设置输出 token 上限、配置终止词（stop 词）、启用工具调用、添加结构化输出约束等）。
   - 核心推荐：当业务进入稳定/可控阶段后，建议统一收敛到 `ChatRequest` 这一入口，覆盖全量配置能力。
 
-### 3.2 ChatMessage：对话原子单位
+### 3.2 ChatMessage
 
 `ChatMessage` 是对话的“原子单位”。你可以把一次对话理解为：**按顺序排列的一组消息**，模型根据这组消息生成下一条 `AiMessage`。
 
@@ -100,7 +100,7 @@ SystemMessage system = SystemMessage.from("""
 """);
 ```
 
-### 3.3 ChatRequest：请求全量配置
+### 3.3 ChatRequest
 
 通过 `ChatRequest` 可完整封装单次对话请求的全量配置项：消息内容、采样参数（如温度值）、输出 token 上限、终止词、工具调用规则、结构化输出约束等。
 
