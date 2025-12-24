@@ -1,0 +1,363 @@
+---
+slug: langchain4j-chat-memory
+title: LangChain4j 对话记忆
+authors: [susamlu]
+tags: [langchain4j, java, llm]
+---
+
+我们此前已明确，对话模型本身具备无状态特性，每次调用均为独立请求，必须手动提交历史消息，才能衔接上下文、保证对话连贯。但手动维护不仅繁琐，还面临两大核心问题：一是上下文 token 容量限制，长对话易超出阈值；二是冗余历史会徒增调用成本。LangChain4j 的 `ChatMemory` 给出了有效的解决方案，下文将围绕对话记忆 `ChatMemory` 展开探讨。
+
+<!-- truncate -->
+
+## 1. 记忆与历史
+
+历史记录完整留存用户与 AI 的所有交互消息，用于前端展示完整对话内容，还原双方真实交互过程。而记忆则是为 LLM 留存关键信息，让模型具备“记住”过往对话的能力，二者区别显著。根据所用记忆算法的不同，记忆会对原始对话内容进行灵活加工：既可删减无关消息、合并多条消息做总结，也可提炼单条消息核心内容、剔除冗余细节；还能注入额外信息（如检索增强生成所需数据）和指令（如结构化输出要求）。LangChain4j 中的 `ChatMemory`，对应的就是这里所说的**记忆**。
+
+## 2. 驱逐策略
+
+驱逐策略的核心目标主要有三：
+
+- **适配上下文窗口**：模型可处理的 token 存在上限，需严格控制输入规模。
+- **控制成本**：输入 token 越多，调用费用与处理耗时越高。
+- **控制延迟**：长上下文会大幅增加首 token 响应时间及整体交互延迟。
+
+LangChain4j 提供了两种主流的窗口型驱逐策略：
+
+- **`MessageWindowChatMemory`**：按消息条数保留最近 N 条消息，实现简单，但由于单条消息的 token 数量差异较大，仅适用于快速原型开发或轻量对话场景；
+- **`TokenWindowChatMemory`**：按 token 数量保留最近 N 个 token，需借助 `TokenCountEstimator` 组件实现，更贴合实际场景的上下文窗口与成本管控需求，适配生产环境使用场景。
+
+<details>
+<summary>示例 1：MessageWindowChatMemoryExample</summary>
+
+```java
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.memory.ChatMemory;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+
+public class MessageWindowChatMemoryExample {
+
+    public static void main(String[] args) {
+        String apiKey = System.getenv("DEEPSEEK_API_KEY");
+
+        OpenAiChatModel model = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(apiKey)
+                .modelName("deepseek-chat")
+                .build();
+
+        // 构建按消息条数限制的对话记忆（保留最近20条消息）
+        ChatMemory messageWindowMemory = MessageWindowChatMemory.builder()
+                // 唯一标识：建议拼接 userId + sessionId 区分不同用户/会话
+                .id("user-123-session-456")
+                // 设置最大保留消息条数
+                .maxMessages(20)
+                .build();
+
+        messageWindowMemory.add(SystemMessage.from("你是一个简洁的助手，回答尽量用要点。"));
+        UserMessage u1 = UserMessage.from("我叫 Sam");
+        messageWindowMemory.add(u1);
+        AiMessage a1 = model.chat(messageWindowMemory.messages()).aiMessage();
+        messageWindowMemory.add(a1);
+
+        UserMessage u2 = UserMessage.from("我叫什么名字？");
+        messageWindowMemory.add(u2);
+        AiMessage a2 = model.chat(messageWindowMemory.messages()).aiMessage();
+        messageWindowMemory.add(a2);
+    }
+
+}
+```
+
+</details>
+
+<details>
+<summary>示例 2：TokenWindowChatMemoryExample</summary>
+
+```java
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.memory.ChatMemory;
+import dev.langchain4j.memory.chat.TokenWindowChatMemory;
+import dev.langchain4j.model.TokenCountEstimator;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
+
+public class TokenWindowChatMemoryExample {
+
+    public static void main(String[] args) {
+        String apiKey = System.getenv("DEEPSEEK_API_KEY");
+
+        OpenAiChatModel model = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(apiKey)
+                .modelName("deepseek-chat")
+                .build();
+
+        // 初始化 token 计数器（以 OpenAI 为例，不同模型需对应不同 Estimator）
+        // 注意：OpenAiTokenCountEstimator 需要指定模型名称，例如 “gpt-4” 或 “gpt-3.5-turbo”
+        // 使用 gpt-3.5-turbo 作为计数模型（与 deepseek-chat 规则一致）
+        TokenCountEstimator tokenCountEstimator = new OpenAiTokenCountEstimator("gpt-3.5-turbo");
+
+        // 构建按 token 数限制的对话记忆（保留最近1000个 token）
+        ChatMemory tokenWindowMemory = TokenWindowChatMemory.builder()
+                // 唯一标识：建议拼接 userId + sessionId 区分不同用户/会话
+                .id("user-123-session-456")
+                // 设置最大保留 token 数，并注入 token 计数器
+                .maxTokens(1000, tokenCountEstimator)
+                .build();
+
+        tokenWindowMemory.add(SystemMessage.from("你是一个简洁的助手，回答尽量用要点。"));
+        UserMessage u1 = UserMessage.from("我叫 Sam");
+        tokenWindowMemory.add(u1);
+        AiMessage a1 = model.chat(tokenWindowMemory.messages()).aiMessage();
+        tokenWindowMemory.add(a1);
+
+        UserMessage u2 = UserMessage.from("我叫什么名字？");
+        tokenWindowMemory.add(u2);
+        AiMessage a2 = model.chat(tokenWindowMemory.messages()).aiMessage();
+        tokenWindowMemory.add(a2);
+    }
+
+}
+```
+
+</details>
+
+## 3. 持久化
+
+默认的 `ChatMemory` 将对话消息存储在内存中，这会带来两个问题：一是服务重启后，之前的对话记忆会全部丢失；二是如果部署了多个服务实例，不同实例之间的记忆数据无法共享，用户跨实例交互时上下文会断档。
+
+要解决这些问题，通常的做法是实现 `ChatMemoryStore` 接口：将 `ChatMessage` 存储到 Redis、数据库或对象存储等持久化介质中，使用 memoryId 来区分不同用户、不同会话的记忆，这样既能在重启后保留数据，又能实现多实例间的记忆共享。
+
+:::tip 序列化工具推荐
+LangChain4j 提供了 `ChatMessageSerializer` 和 `ChatMessageDeserializer` 辅助类，用于序列化和反序列化 `ChatMessage`。推荐使用官方工具而非直接使用 `ObjectMapper`，以确保兼容性和正确性：
+- `ChatMessageSerializer.messageToJson(ChatMessage)` / `messagesToJson(List<ChatMessage>)`
+- `ChatMessageDeserializer.messageFromJson(String)` / `messagesFromJson(String)`
+:::
+
+<details>
+<summary>RedisChatMemoryStore</summary>
+
+```java
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ChatMessageDeserializer;
+import dev.langchain4j.data.message.ChatMessageSerializer;
+import dev.langchain4j.store.memory.chat.ChatMemoryStore;
+import redis.clients.jedis.Jedis;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.JedisPoolConfig;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * 基于 Redis 实现的 ChatMemoryStore，支持持久化对话记忆
+ * 解决内存版 ChatMemory 重启丢失、多实例不共享问题
+ */
+public class RedisChatMemoryStore implements ChatMemoryStore {
+
+    // Redis 键前缀，避免与其他业务键冲突
+    private static final String REDIS_KEY_PREFIX = "langchain4j:chat-memory:";
+    // Redis 连接池（生产环境建议通过配置文件管理参数）
+    private final JedisPool jedisPool;
+
+    // 构造方法：默认连接本地 Redis（6379）
+    public RedisChatMemoryStore() {
+        this("localhost", 6379);
+    }
+
+    // 构造方法：自定义 Redis 地址和端口
+    public RedisChatMemoryStore(String host, int port) {
+        JedisPoolConfig poolConfig = new JedisPoolConfig();
+        // 连接池基础配置（生产环境按需调整）
+        poolConfig.setMaxTotal(20);
+        poolConfig.setMaxIdle(10);
+        poolConfig.setMinIdle(5);
+        this.jedisPool = new JedisPool(poolConfig, host, port);
+    }
+
+    /**
+     * 从 Redis 读取指定 memoryId 的所有对话消息
+     */
+    @Override
+    public List<ChatMessage> getMessages(Object memoryId) {
+        String redisKey = getRedisKey(memoryId);
+        try (Jedis jedis = jedisPool.getResource()) {
+            // Redis List 结构：按插入顺序存储消息的 JSON 字符串
+            List<String> messageJsons = jedis.lrange(redisKey, 0, -1);
+            // 使用官方反序列化工具解析 ChatMessage
+            return messageJsons.stream()
+                    .map(ChatMessageDeserializer::messageFromJson)
+                    .collect(Collectors.toList());
+        }
+    }
+
+    /**
+     * 将最新的消息列表全量更新到 Redis
+     * （LangChain4j 驱逐策略生效后，会调用此方法更新过滤后的消息）
+     */
+    @Override
+    public void updateMessages(Object memoryId, List<ChatMessage> messages) {
+        String redisKey = getRedisKey(memoryId);
+        try (Jedis jedis = jedisPool.getResource()) {
+            // 先删除旧数据，再写入新数据（全量更新，保证与内存中一致）
+            jedis.del(redisKey);
+            if (!messages.isEmpty()) {
+                // 使用官方序列化工具将 ChatMessage 转为 JSON 字符串
+                List<String> messageJsons = messages.stream()
+                        .map(ChatMessageSerializer::messageToJson)
+                        .collect(Collectors.toList());
+                jedis.rpush(redisKey, messageJsons.toArray(new String[0]));
+            }
+        }
+    }
+
+    /**
+     * 删除指定 memoryId 的所有对话消息
+     */
+    @Override
+    public void deleteMessages(Object memoryId) {
+        String redisKey = getRedisKey(memoryId);
+        try (Jedis jedis = jedisPool.getResource()) {
+            jedis.del(redisKey);
+        }
+    }
+
+    // 拼接 Redis 完整键名：前缀 + memoryId
+    private String getRedisKey(Object memoryId) {
+        return REDIS_KEY_PREFIX + memoryId.toString();
+    }
+
+    // 关闭 Redis 连接池（应用关闭时调用）
+    public void close() {
+        if (jedisPool != null) {
+            jedisPool.close();
+        }
+    }
+
+}
+```
+
+</details>
+
+<details>
+<summary>RedisChatMemoryExample</summary>
+
+```java
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.memory.ChatMemory;
+import dev.langchain4j.memory.chat.TokenWindowChatMemory;
+import dev.langchain4j.model.TokenCountEstimator;
+import dev.langchain4j.model.openai.OpenAiTokenCountEstimator;
+
+public class RedisChatMemoryExample {
+
+    public static void main(String[] args) {
+        // 1. 初始化 Redis 版 ChatMemoryStore
+        RedisChatMemoryStore redisStore = new RedisChatMemoryStore("localhost", 6379);
+
+        // 2. 构建带持久化的 ChatMemory
+        TokenCountEstimator tokenCountEstimator = new OpenAiTokenCountEstimator("gpt-3.5-turbo");
+        ChatMemory chatMemory = TokenWindowChatMemory.builder()
+                .id("user-123-session-456")
+                .maxTokens(1000, tokenCountEstimator)
+                .chatMemoryStore(redisStore)
+                .build();
+
+        // 3. 模拟对话：添加用户消息和AI回复
+        chatMemory.add(new UserMessage("你好，我是 Sam"));
+        chatMemory.add(new AiMessage("你好 Sam！"));
+
+        // 4. 验证：读取并打印记忆中的消息
+        System.out.println("当前对话记忆：");
+        chatMemory.messages().forEach(msg -> {
+            // 根据消息类型提取文本内容
+            String text = "";
+            if (msg instanceof UserMessage) {
+                text = ((UserMessage) msg).singleText();
+            } else if (msg instanceof AiMessage) {
+                text = ((AiMessage) msg).text();
+            }
+            System.out.printf("[%s] %s%n", msg.getClass().getSimpleName(), text);
+        });
+
+        // 5. 模拟服务重启/多实例：重新构建 ChatMemory，验证数据持久化
+        TokenCountEstimator newTokenCountEstimator = new OpenAiTokenCountEstimator("gpt-3.5-turbo");
+        ChatMemory newChatMemory = TokenWindowChatMemory.builder()
+                .id("user-123-session-456")
+                .maxTokens(1000, newTokenCountEstimator)
+                .chatMemoryStore(redisStore)
+                .build();
+
+        System.out.println("\n重启后读取的对话记忆：");
+        newChatMemory.messages().forEach(msg -> {
+            // 根据消息类型提取文本内容
+            String text = "";
+            if (msg instanceof UserMessage) {
+                text = ((UserMessage) msg).singleText();
+            } else if (msg instanceof AiMessage) {
+                text = ((AiMessage) msg).text();
+            }
+            System.out.printf("[%s] %s%n", msg.getClass().getSimpleName(), text);
+        });
+
+        // 6. 清理测试数据（可选）
+        redisStore.deleteMessages("user-123-session-456");
+        // 7. 关闭 Redis 连接池（应用退出时执行）
+        redisStore.close();
+    }
+
+}
+```
+
+</details>
+
+:::tip 工程实践建议
+1. **关于 memoryId**：建议拼接「userId + sessionId」作为唯一标识，这样能避免不同用户、不同会话的记忆数据混在一起，防止数据混淆。
+2. **关于历史与记忆**：需要注意，持久化 `ChatMemory` 并不意味着拥有“全量对话记录”。被驱逐策略删除的消息，通常也会从 Redis/数据库等存储中移除（具体取决于实际实现）。如果需要保存完整的对话历史，需要单独实现一套存储逻辑。
+:::
+
+## 4. SystemMessage
+
+`SystemMessage` 作为“系统级规则”，在对话链路中具备特殊地位，LangChain4j 对其进行了特殊处理：
+
+- 一旦加入便会被永久保留，不会随普通消息被驱逐策略清理；
+- 同一时刻仅保留一条 `SystemMessage`，无法并存多条；
+- 重复添加相同内容的 `SystemMessage` 会被忽略，添加不同内容则会直接替换原有消息。
+
+:::tip 工程实践建议
+- **不可变规则**（如安全边界、核心业务、格式约束等）建议封装至 `SystemMessage`，确保其稳定生效且不被清理。
+- **用户可编辑内容**需放入 `UserMessage` 中传递，避免因直接修改 `SystemMessage` 引发提示词注入风险。
+- 若业务需实现“动态系统指令”，需在代码中明确 `SystemMessage` 的“替换”语义，并确保指令变更的权限规则与业务权限模型保持一致，防止越权修改。
+:::
+
+## 5. 工具消息
+
+在工具调用场景中，对话消息存在明确的“配对关联关系”：
+
+- 大模型会在 `AiMessage` 中携带 `ToolExecutionRequest`，发起工具调用请求；
+- 工具执行完成后，需通过 `ToolExecutionResultMessage` 回传执行结果。
+
+部分厂商要求工具结果消息必须与请求消息一一对应（禁止发送无匹配请求的“孤儿结果消息”）。因此，LangChain4j 在执行驱逐策略时，会对工具类消息做联动处理：若包含工具调用请求的 `AiMessage` 被驱逐，其关联的后续 `ToolExecutionResultMessage` 也会被自动清理。
+
+:::tip 工程实践建议
+- 工具执行结果的 JSON 数据需做结构化设计并保持格式稳定，便于后续对话审计、流程回放与问题回溯。
+- 工具执行日志（含输入参数、输出结果、执行状态等）需单独落库（属于全量历史/审计范畴），不可仅依赖 `ChatMemory` 存储，避免因驱逐策略清理而丢失关键审计数据。
+:::
+
+## 6. 实践建议
+
+生产环境推荐以下组合方案，兼顾安全性、功能与成本：
+
+- **全量对话历史（history）**：全程落库存储，支撑合规审计、风控核查、问题复盘与前端 UI 展示等核心诉求。
+- **对话记忆（memory）**：采用 `TokenWindowChatMemory` + `ChatMemoryStore` 组合，精准控制上下文 token 规模与调用成本，适配生产级场景。
+- **长期事实**：通过 RAG 检索方式按需注入，替代无限堆积历史消息的低效方案，兼顾长时记忆与上下文效率。
+- **系统规则**：配置固定 `SystemMessage`，固化安全边界、交互规范与格式约束，保障对话稳定性。
+
+如果你还没看过对话模型的整体抽象设计，建议先读上一篇：[《LangChain4j 对话模型》](/blog/langchain4j-chat-model)。
+
