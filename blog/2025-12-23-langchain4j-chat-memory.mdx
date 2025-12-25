@@ -9,6 +9,10 @@ tags: [langchain4j, java, llm]
 
 <!-- truncate -->
 
+:::info 版本说明
+本文基于 **LangChain4j 1.9.1** 版本编写，API 接口与行为特性可能与其他版本存在差异，请以实际使用的版本为准。
+:::
+
 ## 1. 记忆与历史
 
 历史记录完整留存用户与 AI 的所有交互消息，用于前端展示完整对话内容，还原双方真实交互过程。而记忆则是为 LLM 留存关键信息，让模型具备“记住”过往对话的能力，二者区别显著。根据所用记忆算法的不同，记忆会对原始对话内容进行灵活加工：既可删减无关消息、合并多条消息做总结，也可提炼单条消息核心内容、剔除冗余细节；还能注入额外信息（如检索增强生成所需数据）和指令（如结构化输出要求）。LangChain4j 中的 `ChatMemory`，对应的就是这里所说的**记忆**。
@@ -361,3 +365,6 @@ public class RedisChatMemoryExample {
 
 如果你还没看过对话模型的整体抽象设计，建议先读上一篇：[《LangChain4j 对话模型》](/blog/langchain4j-chat-model)。
 
+## 参考文档
+
+- [LangChain4j 官方文档 - Chat Memory](https://docs.langchain4j.dev/tutorials/chat-memory)
