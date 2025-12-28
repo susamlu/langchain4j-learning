@@ -1,0 +1,405 @@
+---
+slug: langchain4j-response-streaming
+title: LangChain4j 流式响应
+authors: [susamlu]
+tags: [langchain4j, java, llm]
+---
+
+传统文本生成模式下，需等待模型生成完整响应后再整体返回，容易产生显著延迟，生成长文本时该问题尤为突出。流式响应（Response Streaming）采用逐令牌（token）传输机制，用户无需等待全量结果即可即时获取内容，交互体验得以大幅提升。LangChain4j 提供 `StreamingChatModel` 核心接口，原生支持响应流式传输。本文将围绕流式响应展开具体探讨。
+
+<!-- truncate -->
+
+:::info 版本说明
+本文基于 **LangChain4j 1.9.1** 版本编写，API 接口与行为特性可能与其他版本存在差异，请以实际使用的版本为准。
+:::
+
+## 1. 接口抽象
+
+LangChain4j 为流式响应提供了专门的接口抽象：
+
+- **`StreamingChatModel`**：`ChatModel` 的流式版本，支持流式对话响应。
+- **`StreamingLanguageModel`**：`LanguageModel` 的流式版本，支持流式文本生成。（`LanguageModel` 已不再推荐使用，因此本文主要针对 `StreamingChatModel` 进行展开。）
+
+两个接口都接受 `StreamingChatResponseHandler` 的实现作为参数，用于处理流式响应过程中的各种事件。
+
+## 2. StreamingChatResponseHandler
+
+`StreamingChatResponseHandler` 是处理流式响应的核心接口，定义了以下回调方法：
+
+- **`onPartialResponse(String partialResponse)`**：模型生成增量文本响应片段时触发调用，每接收到一段增量文本即执行一次。
+- **`onPartialThinking(PartialThinking partialThinking)`**：模型生成下一段增量思考/推理文本时触发调用（仅部分模型支持，如 DeepSeek）。
+- **`onPartialToolCall(PartialToolCall partialToolCall)`**：模型生成下一段增量工具调用内容时触发调用。
+- **`onCompleteToolCall(CompleteToolCall completeToolCall)`**：单个工具调用的流式传输全部完成时触发调用。
+- **`onCompleteResponse(ChatResponse completeResponse)`**：整个流式响应生成完毕时触发调用，`ChatResponse` 对象包含完整响应内容及元数据（如 token 消耗、响应结束原因等）。
+- **`onError(Throwable error)`**：流式响应过程中发生异常时触发调用，可用于处理超时、限流、网络异常等各类错误场景。
+
+:::tip 兼容性说明
+不同模型厂商对上述回调方法的支持程度可能存在差异。例如，`onPartialThinking` 仅部分模型支持（如 DeepSeek），而 `onPartialToolCall` 和 `onCompleteToolCall` 仅在工具调用场景下才会触发。实际使用时请参考对应厂商的文档说明。
+:::
+
+以下是一个具体的示例代码：
+
+<details>
+<summary>StreamingChatExample</summary>
+
+```java
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+
+import java.util.concurrent.CountDownLatch;
+
+public class StreamingChatExample {
+
+    public static void main(String[] args) throws InterruptedException {
+        String apiKey = System.getenv("DEEPSEEK_API_KEY");
+
+        StreamingChatModel model = OpenAiStreamingChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(apiKey)
+                .modelName("deepseek-chat")
+                .build();
+
+        String userMessage = "给我讲一个笑话";
+
+        // 创建 CountDownLatch，初始计数为 1
+        CountDownLatch latch = new CountDownLatch(1);
+
+        model.chat(userMessage, new StreamingChatResponseHandler() {
+            @Override
+            public void onPartialResponse(String partialResponse) {
+                // 实时输出增量 token
+                System.out.print(partialResponse);
+            }
+
+            @Override
+            public void onCompleteResponse(ChatResponse completeResponse) {
+                // 生成完成，打印完整响应和元数据
+                System.out.println("\n\n--- 生成完成 ---");
+                System.out.println("完整响应: " + completeResponse.aiMessage().text());
+                System.out.println("Token 消耗: " + completeResponse.tokenUsage());
+                // 响应完成，释放锁
+                latch.countDown();
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                // 错误处理
+                System.err.println("发生错误: " + error.getMessage());
+                // 发生错误时也要释放锁，避免主线程永久阻塞
+                latch.countDown();
+            }
+        });
+
+        // 阻塞主线程，等待流式响应完成
+        latch.await();
+    }
+
+}
+```
+
+</details>
+
+## 3. 与 Web 前端集成
+
+流式响应最常见的应用场景是与 Web 前端集成，实现实时推送效果，典型集成方案如下：
+
+### 3.1 集成 SSE
+
+<details>
+<summary>Spring Boot + SSE 示例</summary>
+
+Maven 依赖：
+
+```xml
+<dependencies>
+    <!-- Spring Boot Web -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+        <version>3.5.9</version>
+    </dependency>
+    
+    <!-- LangChain4j OpenAI -->
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-open-ai</artifactId>
+        <version>1.9.1</version>
+    </dependency>
+</dependencies>
+```
+
+Java 代码：
+
+```java
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.io.IOException;
+
+@RestController
+@RequestMapping("/api/chat")
+public class StreamingChatController {
+
+    private final StreamingChatModel model;
+
+    public StreamingChatController() {
+        String apiKey = System.getenv("DEEPSEEK_API_KEY");
+
+        this.model = OpenAiStreamingChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(apiKey)
+                .modelName("deepseek-chat")
+                .build();
+    }
+
+    @CrossOrigin(origins = "*") // 调试临时配置，生产环境需限定具体跨域域名，禁止通配符
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamChat(@RequestParam(name = "message") String message) {
+        SseEmitter emitter = new SseEmitter(60000L); // 60秒超时
+
+        model.chat(message, new StreamingChatResponseHandler() {
+            @Override
+            public void onPartialResponse(String partialResponse) {
+                try {
+                    // 发送增量 token 到前端
+                    emitter.send(SseEmitter.event()
+                            .name("message")
+                            .data(partialResponse));
+                } catch (IOException e) {
+                    // 连接可能已断开，标记错误并停止后续处理
+                    emitter.completeWithError(e);
+                }
+            }
+
+            @Override
+            public void onCompleteResponse(ChatResponse completeResponse) {
+                try {
+                    // 发送完成事件
+                    emitter.send(SseEmitter.event()
+                            .name("complete")
+                            .data(completeResponse.aiMessage().text()));
+                    emitter.complete();
+                } catch (IOException e) {
+                    emitter.completeWithError(e);
+                }
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                emitter.completeWithError(error);
+            }
+        });
+
+        return emitter;
+    }
+
+}
+```
+
+前端 JavaScript 示例：
+
+```javascript
+const eventSource = new EventSource('/api/chat/stream?message=给我讲个笑话');
+
+eventSource.addEventListener('message', (event) => {
+    // 实时追加增量 token
+    document.getElementById('response').textContent += event.data;
+});
+
+eventSource.addEventListener('complete', (event) => {
+    // 响应完成
+    console.log('完整响应:', event.data);
+    eventSource.close();
+});
+
+eventSource.onerror = (error) => {
+    console.error('SSE 错误:', error);
+    eventSource.close();
+};
+```
+
+</details>
+
+### 3.2 集成 WebSocket
+
+<details>
+<summary>Spring Boot + WebSocket 示例</summary>
+
+Maven 依赖：
+
+```xml
+<dependencies>
+    <!-- Spring Boot Web -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+        <version>3.5.9</version>
+    </dependency>
+    
+    <!-- Spring Boot WebSocket -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-websocket</artifactId>
+        <version>3.5.9</version>
+    </dependency>
+    
+    <!-- LangChain4j OpenAI -->
+    <dependency>
+        <groupId>dev.langchain4j</groupId>
+        <artifactId>langchain4j-open-ai</artifactId>
+        <version>1.9.1</version>
+    </dependency>
+</dependencies>
+```
+
+Java 代码：
+
+```java
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import org.springframework.messaging.handler.annotation.MessageMapping;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
+import org.springframework.stereotype.Controller;
+
+@Controller
+public class WebSocketChatController {
+
+    private final StreamingChatModel model;
+    private final SimpMessagingTemplate messagingTemplate;
+
+    public WebSocketChatController(SimpMessagingTemplate messagingTemplate) {
+        String apiKey = System.getenv("DEEPSEEK_API_KEY");
+
+        this.model = OpenAiStreamingChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(apiKey)
+                .modelName("deepseek-chat")
+                .build();
+        this.messagingTemplate = messagingTemplate;
+    }
+
+    @MessageMapping("/chat")
+    public void handleChat(String message) {
+        model.chat(message, new StreamingChatResponseHandler() {
+            @Override
+            public void onPartialResponse(String partialResponse) {
+                // 通过 WebSocket 推送增量 token
+                messagingTemplate.convertAndSend("/topic/response",
+                        new StreamingMessage("partial", partialResponse));
+            }
+
+            @Override
+            public void onCompleteResponse(ChatResponse completeResponse) {
+                // 推送完成事件
+                messagingTemplate.convertAndSend("/topic/response",
+                        new StreamingMessage("complete", completeResponse.aiMessage().text()));
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                messagingTemplate.convertAndSend("/topic/response",
+                        new StreamingMessage("error", error.getMessage()));
+            }
+        });
+    }
+
+    // 消息封装类
+    public static class StreamingMessage {
+
+        private String type;
+        private String content;
+
+        public StreamingMessage(String type, String content) {
+            this.type = type;
+            this.content = content;
+        }
+
+        // getters and setters
+        public String getType() {
+            return type;
+        }
+
+        public void setType(String type) {
+            this.type = type;
+        }
+
+        public String getContent() {
+            return content;
+        }
+
+        public void setContent(String content) {
+            this.content = content;
+        }
+
+    }
+
+}
+```
+
+前端 JavaScript 示例：
+
+```javascript
+// 使用 SockJS 和 STOMP 客户端
+const socket = new SockJS('/ws');
+const stompClient = Stomp.over(socket);
+
+stompClient.connect({}, function(frame) {
+    console.log('WebSocket 连接成功');
+    
+    // 订阅响应主题
+    stompClient.subscribe('/topic/response', function(message) {
+        const data = JSON.parse(message.body);
+        
+        if (data.type === 'partial') {
+            // 实时追加增量 token
+            document.getElementById('response').textContent += data.content;
+        } else if (data.type === 'complete') {
+            // 响应完成
+            console.log('完整响应:', data.content);
+        } else if (data.type === 'error') {
+            // 错误处理
+            console.error('错误:', data.content);
+        }
+    });
+});
+
+socket.onerror = function(error) {
+    console.error('WebSocket 错误:', error);
+};
+
+socket.onclose = function() {
+    console.log('WebSocket 连接已关闭');
+};
+
+// 发送消息
+function sendMessage(message) {
+    stompClient.send('/app/chat', {}, message);
+}
+
+// 示例：发送聊天消息
+sendMessage('给我讲个笑话');
+```
+
+</details>
+
+## 4. 实践建议
+
+- **错误处理与资源管理**：为流式请求配置合理超时阈值，对可重试异常实现指数退避重试策略；异常场景下保证连接闭环、资源释放，同时限制流式请求并发数，避免资源耗尽。
+
+- **幂等性与状态管理**：为每个流式请求分配唯一请求 ID，支撑全链路追踪与重复请求过滤；状态数据仅在 `onCompleteResponse` 阶段统一持久化，规避 `onPartialResponse` 高频回调的写入性能损耗；支持用户主动终止流式请求，并即时清理关联资源。
+
+- **性能优化**：对高频触发的 `onPartialResponse` 回调采用批量聚合后推送的策略；前端侧实现缓冲机制，降低 UI 高频更新带来的渲染开销。
+
+## 参考文档
+
+- [LangChain4j 官方文档 - Response Streaming](https://docs.langchain4j.dev/tutorials/response-streaming)
+
