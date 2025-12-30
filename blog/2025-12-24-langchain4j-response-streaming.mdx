@@ -40,7 +40,7 @@ LangChain4j 为流式响应提供了专门的接口抽象：
 以下是一个具体的示例代码：
 
 <details>
-<summary>StreamingChatExample</summary>
+<summary>StreamingChatResponseHandler 示例</summary>
 
 ```java
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -101,11 +101,182 @@ public class StreamingChatExample {
 
 </details>
 
-## 3. 与 Web 前端集成
+## 3. LambdaStreamingResponseHandler
 
-流式响应最常见的应用场景是与 Web 前端集成，实现实时推送效果，典型集成方案如下：
+在实际开发中，如果只需要处理部分响应和错误，使用完整的 `StreamingChatResponseHandler` 接口可能会显得过于繁琐。为此，LangChain4j 提供了 `LambdaStreamingResponseHandler` 工具类来简化代码。该类提供了静态方法，支持使用 Lambda 表达式创建 `StreamingChatResponseHandler`，避免编写冗长的匿名内部类。
 
-### 3.1 集成 SSE
+`LambdaStreamingResponseHandler` 提供了以下静态方法：
+
+- **`onPartialResponse(Consumer<String> partialResponseHandler)`**：仅处理增量响应，使用 Lambda 表达式定义处理逻辑。
+- **`onPartialResponseAndError(Consumer<String> partialResponseHandler, Consumer<Throwable> errorHandler)`**：同时处理增量响应和错误，分别使用两个 Lambda 表达式定义处理逻辑。
+
+以下是一个使用 `LambdaStreamingResponseHandler` 的简单示例：
+
+<details>
+<summary>LambdaStreamingResponseHandler 示例</summary>
+
+```java
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+
+import static dev.langchain4j.model.LambdaStreamingResponseHandler.onPartialResponse;
+import static dev.langchain4j.model.LambdaStreamingResponseHandler.onPartialResponseAndError;
+
+public class LambdaStreamingExample {
+
+    public static void main(String[] args) throws InterruptedException {
+        String apiKey = System.getenv("DEEPSEEK_API_KEY");
+
+        StreamingChatModel model = OpenAiStreamingChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(apiKey)
+                .modelName("deepseek-chat")
+                .build();
+
+        String userMessage = "给我讲一个笑话";
+
+        // 方式一：仅处理增量响应
+        System.out.println("【开始流式输出】");
+        model.chat(userMessage, onPartialResponse(System.out::print));
+        Thread.sleep(10000); // 等待流式响应完成
+
+        // 方式二：同时处理增量响应和错误
+        System.out.println("\n\n【开始流式输出】");
+        model.chat(userMessage, onPartialResponseAndError(
+                System.out::print,                    // 处理增量响应
+                Throwable::printStackTrace            // 处理错误
+        ));
+        Thread.sleep(10000); // 等待流式响应完成
+    }
+
+}
+```
+
+</details>
+
+:::tip 注意事项
+`LambdaStreamingResponseHandler` 适用于简单流式输出、快速原型开发和日志记录等场景。它仅提供了 `onPartialResponse` 和 `onError` 的简化方法，如果需要处理 `onCompleteResponse`、`onPartialThinking` 或 `onCompleteToolCall` 等事件，仍需使用完整的 `StreamingChatResponseHandler` 实现。
+:::
+
+## 4. 流式任务中止
+
+在实际应用中，除了正常处理流式响应外，有时还需要能够主动中止正在进行的流式响应。例如：用户取消操作、响应内容不符合预期、达到某些业务条件（如响应长度超限、检测到敏感内容等）。
+
+LangChain4j 提供了流式任务中止机制，允许在流式响应过程中主动取消请求。流式任务中止通过 `StreamingHandle` 实现，在以下回调方法的上下文参数中可以获取 `StreamingHandle`：
+
+- `onPartialResponse(PartialResponse partialResponse, PartialResponseContext context)`
+- `onPartialThinking(PartialThinking partialThinking, PartialThinkingContext context)`
+- `onPartialToolCall(PartialToolCall partialToolCall, PartialToolCallContext context)`
+
+调用 `StreamingHandle.cancel()` 方法即可中止流式响应。一旦调用 `cancel()`，LangChain4j 将关闭连接并停止流式传输，`StreamingChatResponseHandler` 将不再接收任何后续回调。
+
+以下示例演示了如何实现流式任务中止，包括基于业务条件的中止（如达到最大 token 限制）和用户主动取消两种场景：
+
+<details>
+<summary>流式任务中止示例</summary>
+
+```java
+import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.PartialResponse;
+import dev.langchain4j.model.chat.response.PartialResponseContext;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.chat.response.StreamingHandle;
+import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+public class StreamingCancellationExample {
+
+    public static void main(String[] args) throws InterruptedException {
+        String apiKey = System.getenv("DEEPSEEK_API_KEY");
+
+        StreamingChatModel model = OpenAiStreamingChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(apiKey)
+                .modelName("deepseek-chat")
+                .build();
+
+        String userMessage = "给我讲一个很长的故事";
+
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicInteger tokenCount = new AtomicInteger(0);
+        AtomicReference<StreamingHandle> streamingHandleRef = new AtomicReference<>();
+        final int MAX_TOKENS = 500; // 最大 token 数量限制
+
+        model.chat(userMessage, new StreamingChatResponseHandler() {
+            @Override
+            public void onPartialResponse(PartialResponse partialResponse, PartialResponseContext context) {
+                String text = partialResponse.text();
+                System.out.print(text);
+
+                // 保存 StreamingHandle 引用，供外部使用
+                streamingHandleRef.compareAndSet(null, context.streamingHandle());
+
+                // 统计已接收的 token 数量（简单示例，实际应使用更精确的 token 计数）
+                int currentCount = tokenCount.addAndGet(text.length());
+
+                // 如果达到最大 token 限制，中止流式响应
+                if (currentCount >= MAX_TOKENS) {
+                    System.out.println("\n\n--- 达到最大 token 限制，中止流式响应 ---");
+                    context.streamingHandle().cancel();
+                    latch.countDown();
+                    return; // 提前返回，避免继续处理
+                }
+            }
+
+            @Override
+            public void onCompleteResponse(ChatResponse completeResponse) {
+                System.out.println("\n\n--- 流式响应完成 ---");
+                latch.countDown();
+            }
+
+            @Override
+            public void onError(Throwable error) {
+                System.err.println("发生错误: " + error.getMessage());
+                latch.countDown();
+            }
+        });
+
+        // 模拟用户操作：5秒后主动取消（如果响应还未完成）
+        Thread cancelThread = new Thread(() -> {
+            try {
+                Thread.sleep(5000);
+                StreamingHandle handle = streamingHandleRef.get();
+                if (handle != null && latch.getCount() > 0) {
+                    System.out.println("\n\n--- 用户主动取消流式响应 ---");
+                    handle.cancel();
+                    latch.countDown();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        cancelThread.start();
+
+        latch.await();
+        cancelThread.join();
+    }
+
+}
+```
+
+</details>
+
+:::warning 注意事项
+
+- 调用 `StreamingHandle.cancel()` 后，`StreamingChatResponseHandler` 将不再接收任何后续回调（包括 `onCompleteResponse` 和 `onError`）。
+- 确保在取消后及时清理相关资源（如移除 `StreamingHandle` 引用、关闭连接等）。
+- 在并发场景下，注意对 `StreamingHandle` 的存储和访问进行适当的线程安全处理。
+  :::
+
+## 5. 与 Web 前端集成
+
+流式响应最常见的应用场景是与 Web 前端集成，实现类似 ChatGPT 的实时打字效果。通过将流式响应推送到前端，用户可以即时看到模型生成的内容，大幅提升交互体验。以下提供两种典型的集成方案：
+
+### 5.1 使用 SSE（Server-Sent Events）
 
 <details>
 <summary>Spring Boot + SSE 示例</summary>
@@ -120,7 +291,7 @@ Maven 依赖：
         <artifactId>spring-boot-starter-web</artifactId>
         <version>3.5.9</version>
     </dependency>
-    
+
     <!-- LangChain4j OpenAI -->
     <dependency>
         <groupId>dev.langchain4j</groupId>
@@ -162,11 +333,15 @@ public class StreamingChatController {
     @CrossOrigin(origins = "*") // 调试临时配置，生产环境需限定具体跨域域名，禁止通配符
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter streamChat(@RequestParam(name = "message") String message) {
+        System.out.println("\n--- 流式响应开始 ---");
+
         SseEmitter emitter = new SseEmitter(60000L); // 60秒超时
 
         model.chat(message, new StreamingChatResponseHandler() {
             @Override
             public void onPartialResponse(String partialResponse) {
+                System.out.print(partialResponse);
+
                 try {
                     // 发送增量 token 到前端
                     emitter.send(SseEmitter.event()
@@ -180,6 +355,8 @@ public class StreamingChatController {
 
             @Override
             public void onCompleteResponse(ChatResponse completeResponse) {
+                System.out.println("\n--- 流式响应完成 ---");
+
                 try {
                     // 发送完成事件
                     emitter.send(SseEmitter.event()
@@ -206,28 +383,28 @@ public class StreamingChatController {
 前端 JavaScript 示例：
 
 ```javascript
-const eventSource = new EventSource('/api/chat/stream?message=给我讲个笑话');
+const eventSource = new EventSource("/api/chat/stream?message=给我讲个笑话");
 
-eventSource.addEventListener('message', (event) => {
-    // 实时追加增量 token
-    document.getElementById('response').textContent += event.data;
+eventSource.addEventListener("message", (event) => {
+  // 实时追加增量 token
+  document.getElementById("response").textContent += event.data;
 });
 
-eventSource.addEventListener('complete', (event) => {
-    // 响应完成
-    console.log('完整响应:', event.data);
-    eventSource.close();
+eventSource.addEventListener("complete", (event) => {
+  // 响应完成
+  console.log("完整响应:", event.data);
+  eventSource.close();
 });
 
 eventSource.onerror = (error) => {
-    console.error('SSE 错误:', error);
-    eventSource.close();
+  console.error("SSE 错误:", error);
+  eventSource.close();
 };
 ```
 
 </details>
 
-### 3.2 集成 WebSocket
+### 5.2 使用 WebSocket
 
 <details>
 <summary>Spring Boot + WebSocket 示例</summary>
@@ -242,14 +419,14 @@ Maven 依赖：
         <artifactId>spring-boot-starter-web</artifactId>
         <version>3.5.9</version>
     </dependency>
-    
+
     <!-- Spring Boot WebSocket -->
     <dependency>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-websocket</artifactId>
         <version>3.5.9</version>
     </dependency>
-    
+
     <!-- LangChain4j OpenAI -->
     <dependency>
         <groupId>dev.langchain4j</groupId>
@@ -348,58 +525,60 @@ public class WebSocketChatController {
 前端 JavaScript 示例：
 
 ```javascript
-// 使用 SockJS 和 STOMP 客户端
-const socket = new SockJS('/ws');
+// 创建 SockJS 实例，连接后端 WebSocket 服务端点（实际部署时需替换为真实路由）
+const socket = new SockJS("/ws");
+// 基于 SockJS 连接创建 STOMP 客户端，用于实现 WebSocket 的消息订阅/发送
 const stompClient = Stomp.over(socket);
 
-stompClient.connect({}, function(frame) {
-    console.log('WebSocket 连接成功');
-    
-    // 订阅响应主题
-    stompClient.subscribe('/topic/response', function(message) {
-        const data = JSON.parse(message.body);
-        
-        if (data.type === 'partial') {
-            // 实时追加增量 token
-            document.getElementById('response').textContent += data.content;
-        } else if (data.type === 'complete') {
-            // 响应完成
-            console.log('完整响应:', data.content);
-        } else if (data.type === 'error') {
-            // 错误处理
-            console.error('错误:', data.content);
-        }
-    });
+stompClient.connect({}, function (frame) {
+  console.log("WebSocket 连接成功");
+
+  // 订阅响应主题
+  stompClient.subscribe("/topic/response", function (message) {
+    const data = JSON.parse(message.body);
+
+    if (data.type === "partial") {
+      // 实时追加增量 token
+      document.getElementById("response").textContent += data.content;
+    } else if (data.type === "complete") {
+      // 响应完成
+      console.log("完整响应:", data.content);
+    } else if (data.type === "error") {
+      // 错误处理
+      console.error("错误:", data.content);
+    }
+  });
 });
 
-socket.onerror = function(error) {
-    console.error('WebSocket 错误:', error);
+socket.onerror = function (error) {
+  console.error("WebSocket 错误:", error);
 };
 
-socket.onclose = function() {
-    console.log('WebSocket 连接已关闭');
+socket.onclose = function () {
+  console.log("WebSocket 连接已关闭");
 };
 
 // 发送消息
 function sendMessage(message) {
-    stompClient.send('/app/chat', {}, message);
+  stompClient.send("/app/chat", {}, message);
 }
 
 // 示例：发送聊天消息
-sendMessage('给我讲个笑话');
+sendMessage("给我讲个笑话");
 ```
 
 </details>
 
-## 4. 实践建议
+## 6. 实践建议
+
+在实际项目中使用流式响应时，需要注意以下几个方面：
 
 - **错误处理与资源管理**：为流式请求配置合理超时阈值，对可重试异常实现指数退避重试策略；异常场景下保证连接闭环、资源释放，同时限制流式请求并发数，避免资源耗尽。
 
-- **幂等性与状态管理**：为每个流式请求分配唯一请求 ID，支撑全链路追踪与重复请求过滤；状态数据仅在 `onCompleteResponse` 阶段统一持久化，规避 `onPartialResponse` 高频回调的写入性能损耗；支持用户主动终止流式请求，并即时清理关联资源。
+- **幂等性与状态管理**：为每个流式请求分配唯一请求 ID，支撑全链路追踪与重复请求过滤；状态数据仅在 `onCompleteResponse` 阶段统一持久化，规避 `onPartialResponse` 高频回调的写入性能损耗；支持用户主动终止流式请求，并及时清理关联资源。
 
 - **性能优化**：对高频触发的 `onPartialResponse` 回调采用批量聚合后推送的策略；前端侧实现缓冲机制，降低 UI 高频更新带来的渲染开销。
 
 ## 参考文档
 
 - [LangChain4j 官方文档 - Response Streaming](https://docs.langchain4j.dev/tutorials/response-streaming)
-
