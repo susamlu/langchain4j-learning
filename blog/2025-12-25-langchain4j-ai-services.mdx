@@ -1,0 +1,1001 @@
+---
+slug: langchain4j-ai-services
+title: LangChain4j AI 服务
+authors: [susamlu]
+tags: [langchain4j, java, llm]
+---
+
+此前我们已讲解 `ChatModel`、`ChatMessage`、`ChatMemory` 等底层组件，这类组件灵活性极高，却需编写大量样板代码。实际落地 LLM 应用时，往往需要提示词模板、对话记忆、大语言模型、输出解析器、RAG 等多组件协同，手动编排十分繁琐。LangChain4j 提供 **AI Services** 高级抽象，帮助开发者聚焦业务逻辑而非底层实现细节。本文将围绕 AI Services 展开具体探讨。
+
+<!-- truncate -->
+
+:::info 版本说明
+本文基于 **LangChain4j 1.9.1** 版本编写，API 接口与行为特性可能与其他版本存在差异，请以实际使用的版本为准。
+:::
+
+## 1. 基本概念
+
+### 1.1 Chains（遗留方案）
+
+Chains 概念源自 Python 的 LangChain（在引入 LCEL（LangChain Expression Language） 之前）。其核心思路是为每个常见用例提供一个预定义的 `Chain`，如对话机器人、RAG 等。Chains 将多个底层组件（如 `ChatModel`、`ChatMemory`、`EmbeddingModel`、`EmbeddingStore` 等）组合在一起，并编排它们之间的交互流程。
+
+#### 核心逻辑
+
+Chains 采用“预制流程化”的设计模式：框架为特定场景（如对话、RAG）提供固定的组件组合与执行流程。开发者只需配置参数，框架会按照预设流程执行。例如，`ConversationalChain` 会自动处理系统提示词注入、消息历史管理、LLM 调用等步骤。
+
+#### 适用场景
+
+Chains 适用于快速原型开发或标准化程度高的场景，当你的需求恰好匹配框架提供的预制流程时，可以快速搭建应用。例如：
+
+- 简单的多轮对话机器人
+- 标准的 RAG 问答系统
+
+#### Chains vs AI Services
+
+Chains 的主要问题在于**过度僵化**：如果需要自定义某些功能（如修改消息处理逻辑、添加自定义工具调用流程、调整 RAG 检索策略等），往往需要继承并重写 Chain 的部分方法，或重新实现整个 Chain，灵活性不足。
+
+LangChain4j 目前仅实现了两个 Chains（`ConversationalChain` 和 `ConversationalRetrievalChain`），且暂无计划添加更多。相比之下，**AI Services 提供了声明式接口设计**，开发者可以自由定义方法签名、输入输出类型、提示词模板等，同时享受框架提供的自动参数转换、响应解析等能力，在灵活性与易用性之间取得了更好的平衡。
+
+### 1.2 AI Services
+
+AI Services 是 LangChain4j 为 Java 量身定制的解决方案。其核心思想是将与 LLM 和其他组件交互的复杂性隐藏在简单的 API 背后。
+
+这种方式与 Spring Data JPA 或 Retrofit 非常相似：你声明式地定义一个接口，描述所需的 API，然后 LangChain4j 会提供一个实现该接口的代理对象。你可以将 AI Service 视为应用服务层的一个组件，它提供 **AI** 服务，因此得名。
+
+#### 核心优势
+
+针对 Chains 的僵化问题，AI Services 进行了针对性优化，核心优势如下：
+
+- **声明式设计**：通过接口定义业务 API，无需关心底层实现细节。
+- **高度灵活**：可以自由定义方法签名、输入输出类型、提示词模板。
+- **易于测试**：作为接口，可以轻松进行单元测试和集成测试。
+- **组合能力强**：可以作为常规组件与其他服务组合使用。
+- **自动转换**：框架自动处理输入输出的格式转换（如 `String` → `UserMessage` → `ChatResponse` → `String`）。
+
+AI Services 处理最常见的操作：
+
+- 格式化 LLM 的输入
+- 解析 LLM 的输出
+
+同时支持更高级的特性：
+
+- 对话记忆
+- 工具调用
+- RAG
+
+AI Services 既可以用于构建有状态的对话机器人（支持多轮交互），也可以用于自动化流程（每次 LLM 调用都是独立的）。
+
+## 2. 核心组件
+
+### 2.1 一个极简的示例
+
+首先，我们定义一个接口，包含一个 `chat` 方法，接收字符串作为输入，返回一个字符串返回值：
+
+```java
+interface Assistant {
+    String chat(String userMessage);
+}
+```
+
+然后，创建底层组件。这些组件将在 AI Service 内部使用。在本例中，我们只需要创建 `ChatModel`：
+
+```java
+ChatModel model = OpenAiChatModel.builder()
+    .apiKey(System.getenv("OPENAI_API_KEY"))
+    .modelName(GPT_4_O_MINI)
+    .build();
+```
+
+最后，使用 `AiServices` 类创建 AI Service 实例：
+
+```java
+Assistant assistant = AiServices.create(Assistant.class, model);
+```
+
+:::note 框架集成
+在 Quarkus 和 Spring Boot 应用中，自动配置会处理 `Assistant` bean 的创建。这意味着你无需调用 `AiServices.create(...)`，只需在需要的地方注入/自动装配 `Assistant` 即可。
+:::
+
+这样就可以使用 `Assistant` 的实例了：
+
+```java
+String answer = assistant.chat("你好");
+System.out.println(answer);
+```
+
+#### 2.1.1 工作原理
+
+我们只需向 `AiServices` 传入接口的 `Class` 对象及所需底层组件，`AiServices` 就会基于该接口动态创建一个代理对象（当前版本通过反射机制实现，官方正评估其他更优的实现方案）。
+
+这个代理对象的核心作用是**自动处理所有输入输出的类型转换与底层调用适配**：以示例场景为例，我们定义的 `chat` 方法接收单个 `String` 类型的用户输入，但底层依赖的 `ChatModel` 并非直接接收 `String` 类型，而是要求输入 `ChatMessage`。因此 AI Service 代理会自动将 `String` 类型的用户输入封装为 `UserMessage`，再调用 `ChatModel` 完成 LLM 请求；而 `chat` 方法声明的返回类型是 `String`，代理对象会在 `ChatModel` 返回 `AiMessage` 后，自动提取其文本内容转换为 `String` 类型，最终作为 `chat` 方法的返回值返回。
+
+### 2.2 AI Service 核心组件
+
+#### 2.2.1 @SystemMessage
+
+现在让我们看一个更复杂的例子。我们将强制 LLM 使用粤语回复。
+
+这通常通过为 LLM 设置 `SystemMessage` 来实现：
+
+```java
+interface Friend {
+    @SystemMessage("你是我的好朋友，请全程用粤语回答我的问题。")
+    String chat(String userMessage);
+}
+
+Friend friend = AiServices.create(Friend.class, model);
+
+String answer = friend.chat("你好");
+```
+
+在本例中，我们添加了 `@SystemMessage` 注解，并指定了要使用的系统提示词模板。AI Service 会自动将该注解中的内容封装为 `SystemMessage` 对象，并与 `UserMessage` 一起发送给 LLM。
+
+`@SystemMessage` 也可以从资源文件加载提示词模板：`@SystemMessage(fromResource = "my-prompt-template.txt")`。
+
+##### 2.2.1.1 System Message Provider
+
+系统消息也可以通过系统消息提供者动态定义：
+
+```java
+Friend friend = AiServices.builder(Friend.class)
+    .chatModel(model)
+    .systemMessageProvider(chatMemoryId -> "回答首句固定为：你好，{当前用户ID}。当前用户ID：" + chatMemoryId)
+    .build();
+```
+
+可以看到，你可以根据对话记忆 ID（该 ID 可对应具体用户 ID 或会话 ID）提供不同的系统消息。
+
+#### 2.2.2 @UserMessage
+
+现在，假设我们使用的模型不支持系统消息，或者我们只想使用 `UserMessage` 来实现该目的：
+
+```java
+interface Friend {
+    @UserMessage("你是我的好朋友，请全程用粤语回答我的问题。{{it}}")
+    String chat(String userMessage);
+}
+
+Friend friend = AiServices.create(Friend.class, model);
+
+String answer = friend.chat("你好");
+```
+
+我们用 `@UserMessage` 替换了 `@SystemMessage`，并定义了包含内置变量 `it` 的提示词模板——`{{it}}` 用于引用方法的唯一参数（即示例中的 `userMessage`，仅当方法只有一个参数时生效）。
+
+若方法有多个参数，或想自定义变量名，可通过 `@V("自定义名称")` 注解标记参数，然后在模板中引用该自定义名称：
+
+```java
+interface Friend {
+    @UserMessage("你是我的好朋友，请全程用粤语回答我的问题。{{message}}")
+    String chat(@V("message") String userMessage);
+}
+```
+
+如果启用了 Java 编译 `-parameters` 选项，也可以直接在模板中使用参数名，无需 `@V` 注解：
+
+```java
+interface Friend {
+    // 假设已启用 -parameters 编译选项
+    // 可直接使用参数名 userMessage 进行引用
+    @UserMessage("你是我的好朋友，请全程用粤语回答我的问题。{{userMessage}}")
+    String chat(String userMessage);
+}
+```
+
+:::note 参数名称
+1. `{{it}}` 规则：仅适用于**单参数方法**，变量名 `it` 为固定值不可修改；多参数方法无法使用 `{{it}}`，需通过 `@V` 注解指定自定义变量名，或启用 `-parameters` 选项后直接使用参数名的方式引用参数。
+2. 自定义变量名的合法方式：
+   - 通用方式：通过 `@V("自定义名称")` 注解标记方法参数，在模板中直接使用 `{{自定义名称}}` 引用；
+   - 纯 Java 项目：编译时启用 `-parameters` 选项（用于保留原参数名），模板中可直接使用方法参数名（无需添加 `@V` 注解）；
+   - 框架集成（Quarkus/Spring Boot）：通常无需配置 `@V` 注解，也无需手动启用 `-parameters` 编译选项，模板中可直接使用方法参数名。核心原理：LangChain4j 借助框架原生的参数解析工具（如 Spring 的 `DefaultParameterNameDiscoverer`）获取真实参数名，自动适配框架的参数解析逻辑；若遇到参数名无法识别的情况，可启用 `-parameters` 编译选项辅助解决。
+3. `-parameters` 选项作用：Java 编译默认会将方法参数名编译为 `arg0/arg1` 这类占位符，启用该选项后，可保留代码中定义的原参数名。
+4. 优先级规则：`@V` 注解指定的名称 > 框架自动解析的参数名 > `-parameters` 选项保留的参数名。当多种配置同时存在时，高优先级的配置会覆盖低优先级配置。
+:::
+
+`@UserMessage` 也可以从资源文件加载提示词模板：`@UserMessage(fromResource = "my-prompt-template.txt")`。
+
+#### 2.2.3 动态改写 ChatRequest
+
+在实际业务场景中，若需为用户消息补充上下文、根据外部条件动态调整系统提示词等，可在 `ChatRequest` 发送给 LLM 之前对其进行修改。例如，向用户消息追加当前时间、地理位置等额外信息，或基于用户等级调整系统提示词的语气与权限范围。
+
+可以通过配置 AI Service 使用 `UnaryOperator<ChatRequest>` 来实现这一点，该函数实现要应用于 `ChatRequest` 的转换：
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .chatRequestTransformer(transformingFunction)  // 配置要应用于 ChatRequest 的转换函数
+    .build();
+```
+
+以下是一个使用 `UnaryOperator<ChatRequest>` 的完整示例：
+
+<details>
+<summary>UnaryOperator 示例</summary>
+
+```java
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
+
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.UnaryOperator;
+
+interface Assistant {
+
+    String chat(String userMessage);
+
+}
+
+public class ChatRequestTransformerExample {
+
+    public static void main(String[] args) {
+        ChatModel model = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
+                .build();
+
+        // 定义转换函数：向用户消息追加额外的上下文信息
+        UnaryOperator<ChatRequest> transformingFunction = chatRequest -> {
+            List<ChatMessage> enhancedMessages = new ArrayList<>();
+
+            // 获取当前时间并格式化
+            String currentTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+
+            // 遍历原始消息，对用户消息进行增强
+            chatRequest.messages().forEach(message -> {
+                if (message instanceof UserMessage userMessage) {
+                    // 向用户消息追加上下文
+                    String enhancedText = userMessage.singleText() + "\n\n[上下文：当前时间为 " + currentTime + "]";
+                    enhancedMessages.add(UserMessage.from(enhancedText));
+                } else {
+                    // 保留非用户消息（如系统消息）
+                    enhancedMessages.add(message);
+                }
+            });
+
+            // 创建新的 ChatRequest，使用增强后的消息列表
+            return ChatRequest.builder()
+                    .messages(enhancedMessages)
+                    .build();
+        };
+
+        Assistant assistant = AiServices.builder(Assistant.class)
+                .chatModel(model)
+                .chatRequestTransformer(transformingFunction)
+                .build();
+
+        String response = assistant.chat("今天是几号？");
+        System.out.println(response);
+    }
+
+}
+```
+
+</details>
+
+如果需要访问 `ChatMemory` 来实现所需的 `ChatRequest` 转换，也可以为 `chatRequestTransformer` 方法配置 `BiFunction<ChatRequest, Object, ChatRequest>` 类型的转换函数——其中第二个参数为 memory ID：
+
+<details>
+<summary>BiFunction 示例（带 Memory ID）</summary>
+
+```java
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.MemoryId;
+import dev.langchain4j.service.UserMessage;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.BiFunction;
+
+interface Assistant {
+
+    String chat(@MemoryId String memoryId, @UserMessage String userMessage);
+
+}
+
+public class ChatRequestTransformerWithMemoryExample {
+
+    public static void main(String[] args) {
+        ChatModel model = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
+                .build();
+
+        // 定义转换函数：根据 memory ID 动态修改系统消息
+        BiFunction<ChatRequest, Object, ChatRequest> transformingFunction = (chatRequest, memoryId) -> {
+            // 根据 memory ID 获取用户特定的配置
+            String userId = memoryId != null ? memoryId.toString() : "unknown";
+
+            // 根据用户 ID 动态生成系统消息
+            String systemMessageText = "回答首句固定为：你好，{当前用户ID}。当前用户ID: " + userId;
+
+            // 构建新的消息列表
+            List<ChatMessage> messages = new ArrayList<>();
+            messages.add(SystemMessage.from(systemMessageText));
+
+            // 保留原始用户消息
+            messages.addAll(chatRequest.messages());
+
+            // 创建新的 ChatRequest
+            return ChatRequest.builder()
+                    .messages(messages)
+                    .build();
+        };
+
+        Assistant assistant = AiServices.builder(Assistant.class)
+                .chatModel(model)
+                .chatMemoryProvider(memoryId -> {
+                    String userId = memoryId != null ? memoryId.toString() : "unknown";
+                    return MessageWindowChatMemory.builder()
+                            .id(userId)
+                            .maxMessages(10)
+                            .build();
+                })
+                .chatRequestTransformer(transformingFunction)
+                .build();
+
+        String answer1 = assistant.chat("user-123", "你好");
+        System.out.println("回答1: " + answer1);
+
+        String answer2 = assistant.chat("user-123", "今天天气怎么样？");
+        System.out.println("回答2: " + answer2);
+    }
+
+}
+```
+
+</details>
+
+##### 2.2.3.1 InvocationParameters
+
+`InvocationParameters` 允许在方法调用时动态设置对话请求的参数（如 `temperature`、`maxOutputTokens` 等）：
+
+```java
+interface AssistantWithInvocationParams {
+    String chat(@UserMessage String userMessage, InvocationParameters params);
+}
+
+AssistantWithInvocationParams assistant = AiServices.builder(AssistantWithInvocationParams.class)
+    .chatModel(model)
+    .build();
+
+// 创建自定义的 InvocationParameters
+Map<String, Object> paramsMap = new HashMap<>();
+paramsMap.put("temperature", 0.85);
+paramsMap.put("maxOutputTokens", 500);
+InvocationParameters customParams = new InvocationParameters(paramsMap);
+
+String answer = assistant.chat("你好", customParams);
+```
+
+## 3. 进阶能力
+
+### 3.1 核心能力增强
+
+#### 3.1.1 多模态
+
+AI Services 支持多模态输入。你可以在方法参数中使用 `ImageContent`、`AudioContent`、`VideoContent` 等多模态内容类型：
+
+```java
+interface ImageAnalyzer {
+    @SystemMessage("你是一个专业的图像分析助手。")
+    String analyzeImage(@UserMessage ImageContent image, @UserMessage String question);
+}
+
+ImageAnalyzer analyzer = AiServices.create(ImageAnalyzer.class, model);
+
+String description = analyzer.analyzeImage(
+    ImageContent.from("https://example.com/cat.jpg"),
+    "详细描述这张图片"
+);
+```
+
+#### 3.1.2 返回类型
+
+AI Services 支持丰富的返回类型，可直接返回 String、结构化对象，或通过 `Result<T>` 包装类型返回；其中结构化对象的解析与类型转换由 LangChain4j 自动完成。
+
+- **String**：返回 LLM 生成的文本内容，AI Service 会自动提取 `AiMessage` 中的文本，无需手动解析。
+- **结构化类型**：返回 `boolean`、`enum`、POJO 等结构化对象，AI Service 会自动将 LLM 输出解析为目标类型后返回。
+- **`Result<T>`**：将任意返回类型 `T` 包装在 `Result<T>` 中，除获取业务结果外，还可获取调用过程中的完整元数据。
+
+**`Result<T>`** 提供的元数据如下：
+
+- **TokenUsage**：汇总 AI Service 调用期间（含多次 LLM 调用，如工具执行场景）的 `token` 总用量。
+- **Sources**：RAG 检索流程中获取到的相关内容。
+- **ToolExecutions**：调用期间执行的所有工具信息，包含工具请求参数与执行结果。
+- **FinishReason**：最终对话响应的完成原因。
+- **IntermediateChatResponses**：所有中间生成的 `ChatResponse` 对象。
+- **FinalChatResponse**：最终生成的 `ChatResponse` 对象。
+
+以下是一个使用 `Result<T>` 的示例：
+
+```java
+interface Assistant {
+    @UserMessage("为以下主题生成文章大纲：{{it}}")
+    Result<List<String>> generateOutlineFor(String topic);
+}
+
+Result<List<String>> result = assistant.generateOutlineFor("Java");
+
+// 获取主要内容
+List<String> outline = result.content();
+
+// 获取 token 使用情况
+TokenUsage tokenUsage = result.tokenUsage();
+
+// 获取 RAG 检索到的内容（如果配置了 RAG）
+List<Content> sources = result.sources();
+
+// 获取工具执行信息（如果使用了工具）
+List<ToolExecution> toolExecutions = result.toolExecutions();
+
+// 获取完成原因
+FinishReason finishReason = result.finishReason();
+```
+
+#### 3.1.3 结构化输出
+
+AI Services 支持多种结构化输出类型，包括 `boolean`、`enum`、POJO 等。LangChain4j 会自动处理 LLM 输出的解析和类型转换，无需手动编写解析逻辑。
+
+##### 3.1.3.1 boolean 返回类型
+
+当方法返回 `boolean` 时，AI Service 会要求 LLM 返回 "true" 或 "false"，然后自动转换为布尔值：
+
+```java
+interface GreetingExpert {
+    @UserMessage("Is the following text a greeting? Text: {{it}}")
+    boolean isGreeting(String text);
+}
+```
+
+##### 3.1.3.2 Enum 返回类型
+
+当方法返回 `enum` 时，AI Service 会要求 LLM 返回枚举值之一：
+
+```java
+enum Sentiment {
+    POSITIVE, NEGATIVE, NEUTRAL
+}
+
+interface SentimentAnalyzer {
+    Sentiment analyzeSentiment(String text);
+}
+```
+
+##### 3.1.3.3 POJO 返回类型
+
+当方法返回 POJO 时，AI Service 会要求 LLM 返回 JSON，然后自动解析为对象。只需将方法的返回类型设置为 POJO，LangChain4j 会自动处理 JSON 解析：
+
+```java
+class Person {
+    private String name;
+    private int age;
+    // getters and setters
+}
+
+interface PersonExtractor {
+    Person extractPerson(String text);
+}
+
+PersonExtractor extractor = AiServices.create(PersonExtractor.class, model);
+
+Person person = extractor.extractPerson("John is 30 years old.");
+// person.getName() == "John"
+// person.getAge() == 30
+```
+
+#### 3.1.4 流式响应
+
+AI Services 支持流式响应。当使用 `TokenStream` 作为返回类型时，AI Service 可以逐 token 流式返回响应：
+
+```java
+interface Assistant {
+    TokenStream chat(String message);
+}
+
+StreamingChatModel model = OpenAiStreamingChatModel.builder()
+    .apiKey(System.getenv("OPENAI_API_KEY"))
+    .modelName(GPT_4_O_MINI)
+    .build();
+
+Assistant assistant = AiServices.create(Assistant.class, model);
+
+TokenStream tokenStream = assistant.chat("给我讲个笑话");
+
+CompletableFuture<ChatResponse> futureResponse = new CompletableFuture<>();
+
+tokenStream
+    .onPartialResponse((String partialResponse) -> System.out.print(partialResponse))
+    .onPartialThinking((PartialThinking partialThinking) -> System.out.println(partialThinking))
+    .onRetrieved((List<Content> contents) -> System.out.println(contents))
+    .onIntermediateResponse((ChatResponse intermediateResponse) -> System.out.println(intermediateResponse))
+    // 工具执行前回调，BeforeToolExecution 包含 ToolExecutionRequest（如工具名称、工具参数等）
+    .beforeToolExecution((BeforeToolExecution beforeToolExecution) -> System.out.println(beforeToolExecution))
+    // 工具执行后回调，ToolExecution 包含 ToolExecutionRequest 和工具执行结果
+    .onToolExecuted((ToolExecution toolExecution) -> System.out.println(toolExecution))
+    .onCompleteResponse((ChatResponse response) -> futureResponse.complete(response))
+    .onError((Throwable error) -> futureResponse.completeExceptionally(error))
+    .start();
+
+futureResponse.join(); // 阻塞主线程，直到流式响应完成（LangChain4j 会自动在后台线程中处理流式响应的接收与回调）
+```
+
+##### 3.1.4.1 流式响应取消
+
+如果需要取消流式响应，可以在以下回调中使用上下文参数：
+
+- `onPartialResponseWithContext(BiConsumer<PartialResponse, PartialResponseContext>)`
+- `onPartialThinkingWithContext(BiConsumer<PartialThinking, PartialThinkingContext>)`
+
+例如：
+
+```java
+tokenStream
+    .onPartialResponseWithContext((PartialResponse partialResponse, PartialResponseContext context) -> {
+        process(partialResponse);
+        if (shouldCancel()) {
+            context.streamingHandle().cancel();
+        }
+    })
+    .onCompleteResponse((ChatResponse response) -> futureResponse.complete(response))
+    .onError((Throwable error) -> futureResponse.completeExceptionally(error))
+    .start();
+```
+
+当调用 `StreamingHandle.cancel()` 时，LangChain4j 将关闭连接并停止流式传输。一旦调用了 `StreamingHandle.cancel()`，`TokenStream` 将不再接收任何后续回调。
+
+##### 3.1.4.2 Flux 实现
+
+如果使用 Reactor，也可以使用 `Flux<String>` 作为返回类型。需要先导入 `langchain4j-reactor` 模块：
+
+```xml
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j-reactor</artifactId>
+    <version>1.9.1</version>
+</dependency>
+```
+
+```java
+interface Assistant {
+    Flux<String> chat(String message);
+}
+```
+
+### 3.2 高级应用能力
+
+#### 3.2.1 对话记忆
+
+AI Services 支持配置 `ChatMemory` 维护对话上下文，使服务能够“记住”历史交互内容，示例如下：
+
+```java
+interface Assistant {
+    String chat(String userMessage);
+}
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .chatMemory(MessageWindowChatMemory.withMaxMessages(10))
+    .build();
+```
+
+上述方式中，AI Service 的所有调用会共享同一个 `ChatMemory` 实例。但在多用户场景下，该方案不适用——每个用户需独立的 `ChatMemory` 实例来维护专属对话上下文。
+
+##### 3.2.1.1 ChatMemoryProvider
+
+针对多用户场景，可通过 `ChatMemoryProvider` 为不同用户分配独立的 `ChatMemory` 实例，核心用法如下：
+
+```java
+interface Assistant {
+    String chat(@MemoryId int memoryId, @UserMessage String message);
+}
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .chatMemoryProvider(memoryId -> MessageWindowChatMemory.withMaxMessages(10))
+    .build();
+
+String answerToKlaus = assistant.chat(1, "Hello, my name is Klaus");
+String answerToFrancine = assistant.chat(2, "Hello, my name is Francine");
+```
+
+`ChatMemoryProvider` 会根据传入的 `memoryId` 为每个用户生成唯一的 `ChatMemory` 实例，确保多用户对话记忆互不干扰。
+
+##### 3.2.1.2 内存管理
+
+使用 `ChatMemoryProvider` 时，需主动清理不再使用的对话记忆以避免内存泄漏。只需让 AI Service 接口继承 `ChatMemoryAccess`，即可获取 `ChatMemory` 的操作权限：
+
+```java
+interface Assistant extends ChatMemoryAccess {
+    String chat(@MemoryId int memoryId, @UserMessage String message);
+}
+```
+
+继承后可直接访问和清理指定 `memoryId` 对应的对话记忆：
+
+```java
+String answerToKlaus = assistant.chat(1, "Hello, my name is Klaus");
+String answerToFrancine = assistant.chat(2, "Hello, my name is Francine");
+
+// 访问 Klaus 的对话记忆
+List<ChatMessage> messagesWithKlaus = assistant.getChatMemory(1).messages();
+
+// 清除 Francine 的对话记忆
+boolean chatMemoryWithFrancineEvicted = assistant.evictChatMemory(2);
+```
+
+:::note 注意事项
+1. **默认记忆 ID 规则**：若 AI Service 方法未通过 `@MemoryId` 标注参数，`ChatMemoryProvider` 会默认使用字符串 `"default"` 作为 `memoryId`。
+
+2. **并发调用风险**：同一 `@MemoryId` 对应的 `ChatMemory` 不支持并发调用，否则可能导致记忆数据损坏；当前 AI Service 未提供并发防护机制，需业务层自行控制。
+:::
+
+#### 3.2.2 工具调用
+
+AI Services 支持工具调用（Function Calling）。只需将工具对象传递给 AI Service：
+
+```java
+class Tools {
+    @Tool
+    int add(int a, int b) {
+        return a + b;
+    }
+
+    @Tool
+    int multiply(int a, int b) {
+        return a * b;
+    }
+}
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .tools(new Tools())
+    .build();
+
+String answer = assistant.chat("What is 1+2 and 3*4?");
+```
+
+在此场景中，LLM 会识别出需要调用的工具，进而返回对应的工具调用指令（包含方法名和参数）；LangChain4j 会自动解析该指令，执行 `add (1, 2)` 和 `multiply (3, 4)` 方法，并将执行结果反馈给 LLM，最终由 LLM 生成最终答案。
+
+更多关于工具的详细信息可以查看[工具调用文档](https://docs.langchain4j.dev/tutorials/tools)。
+
+#### 3.2.3 RAG 检索增强生成
+
+AI Service 可以配置 `ContentRetriever` 以启用简单的 RAG：
+
+```java
+EmbeddingStore embeddingStore = ...;
+EmbeddingModel embeddingModel = ...;
+
+ContentRetriever contentRetriever = new EmbeddingStoreContentRetriever(
+    embeddingStore, 
+    embeddingModel
+);
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .contentRetriever(contentRetriever)
+    .build();
+```
+
+配置 `RetrievalAugmentor` 可以提供更大的灵活性，启用高级 RAG 功能，如查询转换、重排序等：
+
+```java
+RetrievalAugmentor retrievalAugmentor = DefaultRetrievalAugmentor.builder()
+    .queryTransformer(...)
+    .queryRouter(...)
+    .contentAggregator(...)
+    .contentInjector(...)
+    .executor(...)
+    .build();
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .retrievalAugmentor(retrievalAugmentor)
+    .build();
+```
+
+更多关于 RAG 的详细信息可以查看[RAG 文档](https://docs.langchain4j.dev/tutorials/rag)。
+
+#### 3.2.4 多 AI Service 链式组合
+
+随着大语言模型（LLM）驱动的应用逻辑日趋复杂，**将应用拆解为粒度更细的组件**已成为一项核心实践——这也是传统软件开发领域的通用准则。
+以系统提示词为例：若将所有业务场景的指令堆砌在一份系统提示词中，会带来多重问题：一是极易引入错误、降低开发效率；二是指令过载可能导致 LLM 忽略部分关键要求；三是指令编排顺序会直接影响模型执行效果，进一步提升提示词的维护复杂度。
+
+这一“拆解优化”的原则，同样适用于**工具调用、检索增强生成（RAG）与模型参数配置**（如`temperature`、`maxTokens`等）：
+
+1.  **工具调用层面**：对话机器人并非在所有场景下都需要调用全部工具。例如，当用户仅发送问候或道别语时，让 LLM 加载数十甚至上百个工具的元数据，会造成大量 `token` 浪费，推高调用成本；更严重的是，冗余的工具定义可能诱发模型幻觉或误调用风险，导致不可预期的执行结果。
+
+2.  **RAG 层面**：上下文的注入并非“多多益善”。不必要的知识库内容会增加 `token` 消耗，同时延长模型的响应延迟，反而降低用户体验。
+
+3.  **模型参数层面**：参数配置需要按需调整——在需要高度确定性输出的场景（如数据校验、规则生成），应设置较低的 `temperature`；在需要创意性内容生成的场景，则可适当调高该参数。
+
+究其本质，**更小、更专一的组件具备显著优势**：它们的开发、测试、维护与逻辑理解成本更低，同时能更精准地适配特定业务场景的需求。
+
+除此之外，在设计 LLM 应用时，还需明确一个核心权衡维度：
+
+- 你是否希望应用具备**高度确定性**，由预设的控制流主导执行，而 LLM 仅作为其中一个功能组件？
+
+- 或者，你更倾向于让 LLM **完全自主决策**，成为驱动整个应用的核心引擎？
+
+- 亦或是根据不同场景，采用**混合模式**？
+
+当你将应用拆解为更小的可管理单元后，以上所有架构选型都将具备落地的可行性。
+
+在 LangChain4j 中，**AI Service** 恰好是实现这种“模块化拆解”的核心载体——它可以像常规的确定性软件组件一样被灵活使用与组合：
+
+- 支持**链式调用**：按业务流程顺序调用多个 AI Service，实现复杂任务的分步处理。
+
+- 支持**条件控制**：利用 AI Service 返回的 `boolean` 类型结果，构建兼具确定性与 LLM 驱动能力的 `if/else` 逻辑；基于返回的 `enum` 类型，实现 `switch` 分支控制。
+
+- 支持**循环迭代**：借助 AI Service 返回的数值类型（如 `int` ），设计 `for/while` 循环逻辑。
+
+- 支持**便捷测试**：由于 AI Service 基于接口定义，可轻松在单元测试中进行 Mock 模拟。
+
+- 支持**独立验证**：可对每个 AI Service 单独开展集成测试、效果评估与参数调优，精准找到最优配置。
+
+我们以一个简单的企业对话机器人场景为例：当用户发送问候语时，机器人直接返回预定义的固定回复（无需调用 LLM）；当用户提出业务问题时，机器人则基于企业内部知识库，通过 RAG 模式生成回复。
+
+要实现这一需求，最合理的方式就是将其拆解为**两个独立的 AI Service**：
+
+<details>
+<summary>多 AI Service 组合示例</summary>
+
+```java
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
+import dev.langchain4j.rag.content.retriever.ContentRetriever;
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+
+import java.time.Duration;
+import java.util.List;
+
+/**
+ * 微笑口腔（Miles of Smiles）多 AI 服务示例：
+ * - 基础对话模型负责问候检测与路由（低计算成本、快响应）
+ * - 进阶对话模型 + 检索增强生成（RAG）负责复杂业务回答
+ */
+public class MilesOfSmilesMultiServiceExample {
+
+    /**
+     * 问候识别专家：使用基础对话模型判断输入是否为问候语。
+     */
+    interface GreetingExpert {
+
+        @UserMessage("请仅返回true或false，判断以下文本是否为问候语：{{it}}")
+        boolean isGreeting(String text);
+
+    }
+
+    /**
+     * 智能客服机器人：结合检索到的业务信息，提供专业的口腔服务回复。
+     */
+    interface ChatBot {
+
+        @SystemMessage("你是微笑口腔的智能客服助手，请严格基于检索到的业务信息回答用户问题，保持专业、友好和简洁，不编造未提及的信息。")
+        String reply(String userMessage);
+
+    }
+
+    /**
+     * 编排器：先通过问候检测判断用户意图，再决定是否触发 RAG 流程。
+     */
+    static class MilesOfSmiles {
+
+        private final GreetingExpert greetingExpert;
+        private final ChatBot chatBot;
+
+        MilesOfSmiles(GreetingExpert greetingExpert, ChatBot chatBot) {
+            this.greetingExpert = greetingExpert;
+            this.chatBot = chatBot;
+        }
+
+        String handle(String userMessage) {
+            // 预处理用户输入，避免空值/全空格导致的误判
+            String trimmedMessage = userMessage.trim();
+            if (trimmedMessage.isEmpty()) {
+                return "您好！请问您有什么关于口腔服务的问题想要咨询吗？";
+            }
+
+            boolean isGreeting = greetingExpert.isGreeting(trimmedMessage);
+            System.out.println("[路由] 检测到问候语？" + isGreeting);
+            if (isGreeting) {
+                return "您好！欢迎来到微笑口腔，有什么可以帮到您的吗？";
+            }
+            System.out.println("[路由] 转向 RAG + 进阶模型处理业务问题");
+            return chatBot.reply(trimmedMessage);
+        }
+
+    }
+
+    /**
+     * 构建内存向量检索器，加载微笑口腔的核心业务文档并完成向量化存储。
+     *
+     * @param embeddingModel 用于文本向量化的嵌入模型
+     * @return 可检索业务文档的 ContentRetriever
+     */
+    private static ContentRetriever milesOfSmilesContentRetriever(EmbeddingModel embeddingModel) {
+        EmbeddingStore<TextSegment> store = new InMemoryEmbeddingStore<>();
+
+        List<TextSegment> docs = List.of(
+                TextSegment.from("微笑口腔提供牙科健康咨询、牙齿清洁、牙齿美白与正畸方案，强调无痛体验。"),
+                TextSegment.from("我们的诊所支持快速预约与复诊提醒，营业时间为每周一到周六 9:00-19:00。"),
+                TextSegment.from("微笑口腔的儿童口腔护理团队专注于预防性保健，提供氟化物涂覆与窝沟封闭。"),
+                TextSegment.from("诊所提供分期付款和保险直付选项，可通过官网和电话完成。"),
+                TextSegment.from("微笑口腔设有洁牙、全景 X 光和个性化居家护理指导，帮助维持长期口腔健康。")
+        );
+
+        // 批量向量化并存储文档
+        for (TextSegment doc : docs) {
+            Embedding embedding = embeddingModel.embed(doc).content();
+            store.add(embedding, doc);
+        }
+
+        // 配置检索器：返回最相关的3条结果（平衡相关性与响应速度）
+        return EmbeddingStoreContentRetriever.builder()
+                .embeddingStore(store)
+                .embeddingModel(embeddingModel)
+                .maxResults(3)
+                .minScore(0.5) // 过滤相似度低于 0.5 的结果，减少噪声
+                .build();
+    }
+
+    public static void main(String[] args) {
+        // 基础对话模型：用于简单的问候检测（配置低温度、快响应）
+        // 实际场景可替换为 Ollama 部署的本地模型（如 Llama 3.1 8B），进一步降低成本
+        ChatModel basicChatModel = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
+                .temperature(0.0) // 温度设为0，确保判断结果稳定
+                .timeout(Duration.ofSeconds(3)) // 短超时，适配简单判断场景
+                .build();
+
+        GreetingExpert greetingExpert = AiServices.create(GreetingExpert.class, basicChatModel);
+
+        // 进阶对话模型：用于复杂业务问答（配置更高响应质量的模型）
+        ChatModel advancedChatModel = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
+                .temperature(0.3) // 低温度保证回答的准确性
+                .maxTokens(1000) // 足够的令牌数支撑业务回答
+                .timeout(Duration.ofSeconds(10))
+                .build();
+
+        // 嵌入模型：使用通义千问文本嵌入模型（适配中文场景的向量化能力）
+        EmbeddingModel embeddingModel = OpenAiEmbeddingModel.builder()
+                .baseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1") // 通义千问兼容 OpenAI 的接口地址
+                .apiKey(System.getenv("QWEN_API_KEY"))
+                .modelName("text-embedding-v2")
+                .build();
+
+        // 构建业务文档检索器
+        ContentRetriever contentRetriever = milesOfSmilesContentRetriever(embeddingModel);
+
+        // 构建智能客服：集成进阶模型 + 业务文档检索
+        ChatBot chatBot = AiServices.builder(ChatBot.class)
+                .chatModel(advancedChatModel)
+                .contentRetriever(contentRetriever)
+                .build();
+
+        // 初始化服务编排器
+        MilesOfSmiles milesOfSmiles = new MilesOfSmiles(greetingExpert, chatBot);
+
+        // 测试1：问候语检测
+        String greetingReply = milesOfSmiles.handle("你好");
+        System.out.println("[回复] " + greetingReply);
+
+        // 测试2：业务问题查询
+        String serviceReply = milesOfSmiles.handle("你们提供哪些儿童口腔服务？");
+        System.out.println("[回复] " + serviceReply);
+    }
+
+}
+```
+
+</details>
+
+我们可以选用成本更低的 Llama 2 来完成“识别文本是否为问候语”这一简单任务，而对于更复杂的业务问题解答，则采用成本更高的 GPT-4 结合内容检索器（RAG）来实现。
+
+这是一个非常简单且略显基础的例子，但足以清晰阐明“模块化拆解”的核心思路。
+
+通过这种拆解，我们可以单独模拟实现 `GreetingExpert`（问候识别服务）和 `ChatBot`（问答服务），并对整合后的 `MilesOfSmiles`（整体机器人应用）进行测试；也能分别对 `GreetingExpert` 和 `ChatBot` 开展集成测试，还可以单独评估每个服务的性能表现，为其匹配最优参数配置。从长远来看，甚至可以针对每个特定子任务，微调一个小型专用模型，进一步提升效率与效果。
+
+## 4. 工程落地
+
+### 4.1 质量安全与合规
+
+#### 4.1.1 自动审核
+
+值得一提的是，AI Service 还具备自动执行内容审核的能力。当检测到不当内容时，系统会抛出 `ModerationException` 异常，该异常中包含原始的 `Moderation` 对象，此对象可提供被标记内容的详细信息（例如被标记的具体文本）。
+
+我们可以在构建 AI Service 的过程中，直接配置开启这一自动审核功能，实现内容安全的前置防护。
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .moderationModel(moderationModel)  // 配置审核模型
+    .build();
+```
+
+#### 4.1.2 测试
+
+AI Services 作为接口，可以轻松进行单元测试和集成测试。你可以使用 Mockito 等框架模拟 AI Service，也可以创建真实的实现进行集成测试。
+
+<details>
+<summary>AI Service 测试示例</summary>
+
+```java
+// 单元测试：模拟 AI Service
+@Test
+void testMilesOfSmilesWithGreeting() {
+    GreetingExpert mockGreetingExpert = mock(GreetingExpert.class);
+    ChatBot mockChatBot = mock(ChatBot.class);
+    
+    when(mockGreetingExpert.isGreeting("你好")).thenReturn(true);
+    
+    MilesOfSmiles milesOfSmiles = new MilesOfSmiles(mockGreetingExpert, mockChatBot);
+    String result = milesOfSmiles.handle("你好");
+    
+    assertEquals("您好！欢迎来到微笑口腔，有什么可以帮到您的吗？", result);
+    verify(mockChatBot, never()).reply(anyString());
+}
+
+// 集成测试：使用真实的 AI Service
+@Test
+void testGreetingExpertIntegration() {
+    GreetingExpert greetingExpert = AiServices.create(GreetingExpert.class, model);
+    
+    assertTrue(greetingExpert.isGreeting("你好"));
+    assertTrue(greetingExpert.isGreeting("喂!"));
+    assertFalse(greetingExpert.isGreeting("今天天气怎么样？"));
+}
+```
+
+</details>
+
+### 4.2 实践建议
+
+- **接口设计**：AI Service 接口应面向业务领域模型设计，规避技术实现细节的暴露；方法命名需精准传递业务意图，确保代码的可读性与可维护性。
+
+- **职责分离**：将复杂的 LLM 应用拆解为多个专用 AI Service，使每个服务聚焦单一特定任务。这种设计模式能显著降低测试、维护成本，同时提升优化的精准度。
+
+- **成本优化**：依据任务复杂度匹配适配的模型资源。对于分类、信息提取等简单任务，可选用轻量型小模型；针对内容生成、复杂推理等核心任务，再启用能力更强的大型模型，实现成本与效果的平衡。
+
+- **错误处理**：AI Service 运行过程中可能触发多种异常，例如网络通信故障、API 调用限制、内容审核不通过等。需在业务代码中预设完善的异常处理机制，确保系统稳定性与用户体验。
+
+- **测试策略**：采用“模拟+真实”的分层测试方案：单元测试阶段借助模拟对象（如 Mockito）隔离依赖，高效验证逻辑；集成测试阶段使用真实模型，校验服务与其他组件的协同效果。对于核心业务逻辑，建议同时执行两种测试，保障系统可靠性。
+
+如果你还没看过对话模型的整体抽象设计，建议先读：[《LangChain4j 对话模型》](/blog/langchain4j-chat-model)。
+
+如果你需要了解对话记忆的详细内容，可以查看：[《LangChain4j 对话记忆》](/blog/langchain4j-chat-memory)。
+
+如果你需要了解流式响应的实现方式，可以查看：[《LangChain4j 流式响应》](/blog/langchain4j-response-streaming)。
+
+## 参考文档
+
+- [LangChain4j 官方文档 - AI Services](https://docs.langchain4j.dev/tutorials/ai-services)
