@@ -218,7 +218,7 @@ LangChain4j 支持的多模态内容有以下几种：
 
 ```java
 UserMessage userMessage = UserMessage.from(
-    TextContent.from("详细描述以下图像"),
+    TextContent.from("详细描述这张图片"),
     ImageContent.from("https://example.com/cat.jpg")
 );
 ChatResponse response = model.chat(userMessage);
