@@ -28,7 +28,7 @@ LangChain4j 采用“模块化”集成方式：不同的模型厂商、向量�
 <dependency>
     <groupId>dev.langchain4j</groupId>
     <artifactId>langchain4j-open-ai</artifactId>
-    <version>1.9.1</version>
+    <version>1.10.0</version>
 </dependency>
 ```
 
@@ -36,7 +36,7 @@ LangChain4j 采用“模块化”集成方式：不同的模型厂商、向量�
 <TabItem value="gradle" label="Gradle（build.gradle）">
 
 ```gradle title="build.gradle"
-implementation 'dev.langchain4j:langchain4j-open-ai:1.9.1'
+implementation 'dev.langchain4j:langchain4j-open-ai:1.10.0'
 ```
 
 </TabItem>
@@ -53,7 +53,7 @@ implementation 'dev.langchain4j:langchain4j-open-ai:1.9.1'
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-bom</artifactId>
-            <version>1.9.1</version>
+            <version>1.10.0</version>
             <type>pom</type>
             <scope>import</scope>
         </dependency>
@@ -62,7 +62,7 @@ implementation 'dev.langchain4j:langchain4j-open-ai:1.9.1'
 ```
 
 :::caution
-虽然 BOM 版本是 `1.9.1`，但部分模块仍可能带 beta 版本号，未来可能存在破坏性变更；升级前建议先阅读变更说明。
+虽然 BOM 版本是 `1.10.0`，但部分模块仍可能带 beta 版本号，未来可能存在破坏性变更；升级前建议先阅读变更说明。
 :::
 
 </details>
@@ -138,7 +138,7 @@ public class HelloLangChain4jDemoKey {
 <details>
 <summary><b>SNAPSHOT</b></summary>
 
-如需使用 SNAPSHOT 版本，需要先配置 snapshot 仓库，再指定 `x.x.x-SNAPSHOT` 格式的快照版本号（例如 `1.9.1-SNAPSHOT`）。SNAPSHOT 适合用来验证新特性或修复，但由于内容持续迭代，稳定性无法保障，**不建议直接用于生产环境**。
+如需使用 SNAPSHOT 版本，需要先配置 snapshot 仓库，再指定 `x.x.x-SNAPSHOT` 格式的快照版本号（例如 `1.10.0-SNAPSHOT`）。SNAPSHOT 适合用来验证新特性或修复，但由于内容持续迭代，稳定性无法保障，**不建议直接用于生产环境**。
 
 ```xml title="pom.xml"
 <repositories>
@@ -161,7 +161,7 @@ public class HelloLangChain4jDemoKey {
     <dependency>
         <groupId>dev.langchain4j</groupId>
         <artifactId>langchain4j-open-ai</artifactId>
-        <version>1.9.1-SNAPSHOT</version>
+        <version>1.10.0-SNAPSHOT</version>
     </dependency>
 </dependencies>
 ```
