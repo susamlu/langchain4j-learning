@@ -32,3 +32,8 @@ llm:
   label: LLM
   permalink: /llm
   description: 大语言模型（LLM）相关的应用与工程实践
+
+agent:
+  label: Agent
+  permalink: /agent
+  description: Agent 相关的应用与工程实践
