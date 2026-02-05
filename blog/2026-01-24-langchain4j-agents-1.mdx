@@ -135,6 +135,9 @@ public interface StyleEditor {
 
 基于上述三个智能体，可构建顺序工作流，使 `CreativeWriter` 的输出作为 `AudienceEditor` 和 `StyleEditor` 的输入，最终输出经过双重编辑的故事内容，具体实现如下：
 
+<details>
+<summary>顺序工作流示例</summary>
+
 ```java title="SequentialWorkflowExample.java"
 import dev.langchain4j.agentic.AgenticServices;
 import dev.langchain4j.agentic.Agent;
@@ -245,6 +248,8 @@ public class SequentialWorkflowExample {
 }
 ```
 
+</details>
+
 上述代码中的 `novelCreator` 智能体本质是一个实现顺序工作流的智能体系统，其整合了三个子智能体并按顺序调用。由于该智能体未提供类型化接口定义，序列智能体构建器返回 `UntypedAgent` 实例，这是一种通用智能体，支持通过输入映射进行调用。
 
 ```java
@@ -303,6 +308,9 @@ public interface StyleScorer {
 ```
 
 随后，可将 `StyleScorer` 智能体与 `StyleEditor` 智能体整合到循环工作流中，通过迭代编辑与评分，持续优化故事内容，直至评分达到预设阈值（如 0.8）或达到最大迭代次数，具体实现如下：
+
+<details>
+<summary>循环工作流示例</summary>
 
 ```java title="LoopWorkflowExample.java"
 import dev.langchain4j.agentic.Agent;
@@ -421,6 +429,8 @@ public class LoopWorkflowExample {
 }
 ```
 
+</details>
+
 上述代码中，`styleScorer` 智能体将评分结果写入 `AgenticScope` 中名为 `score` 的共享变量，循环的退出条件通过读取该变量值进行判断。
 
 `exitCondition` 方法支持接收 `Predicate<AgenticScope>` 作为参数，默认在每次智能体调用后触发条件评估，一旦满足条件即退出循环，以减少不必要的智能体调用。若需强制在所有智能体调用完成后再检查退出条件，可通过 `testExitAtLoopEnd(true)` 方法配置循环构建器。此外，`exitCondition` 方法还支持接收 `BiPredicate<AgenticScope, Integer>` 作为参数，该参数的第二个输入值为当前循环迭代计数器，示例如下：
@@ -478,6 +488,9 @@ public interface MovieExpert {
 ```
 
 由于两个智能体的任务执行相互独立，可通过 `AgenticServices.parallelBuilder()` 方法实现并行调用，具体如下：
+
+<details>
+<summary>并行工作流示例</summary>
 
 ```java title="ParallelWorkflowExample.java"
 import dev.langchain4j.agentic.Agent;
@@ -621,6 +634,8 @@ public class ParallelWorkflowExample {
 }
 ```
 
+</details>
+
 上述代码中，`EveningPlannerAgent` 借助 `output` 方法，对两个子智能体的输出结果进行组装，最终完成电影与餐食的匹配组合，生成 `EveningPlan` 对象列表。需要说明的是，`output` 方法并非仅适用于并行工作流，还可在其他工作流模式中使用，其核心作用是定义子智能体输出结果的组合逻辑，而非简单从 `AgenticScope` 获取返回值。此外，`executor` 方法还支持可选配置 `Executor` 实例作为参数，以实现子智能体的并行执行；若未主动配置该实例，框架将默认采用内部缓存线程池。
 
 ### 条件分支工作流
@@ -654,6 +669,9 @@ public enum RequestCategory {
 ```
 
 这样，定义一个 `MedicalExpert` 智能体，以及类似的 `LegalExpert` 和 `TechnicalExpert` 智能体，可构建 `ExpertRouterAgent`，实现条件工作流，根据用户请求的类别调用相应的智能体。
+
+<details>
+<summary>条件分支工作流示例</summary>
 
 ```java title="ConditionalWorkflowExample.java"
 import dev.langchain4j.agentic.Agent;
@@ -793,6 +811,8 @@ public class ConditionalWorkflowExample {
 
 }
 ```
+
+</details>
 
 ## 总结
 
