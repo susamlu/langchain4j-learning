@@ -1,0 +1,879 @@
+---
+slug: langchain4j-agents-execution
+title: LangChain4j 智能体（二）
+authors: [susamlu]
+tags: [langchain4j, java, llm, agent]
+---
+
+本文介绍 LangChain4j 智能体的执行特性（异步和流式）以及错误处理、可观测性和声明式 API 等高级特性。这些特性使智能体系统更加健壮、高效和易于监控。
+
+<!-- truncate -->
+
+:::info 版本说明
+
+本文基于 **LangChain4j 1.10.0** 版本编写，API 接口与行为特性可能与其他版本存在差异，请以实际使用的版本为准。
+
+:::
+
+:::warning 实验性功能
+
+`langchain4j-agentic` 模块目前处于实验性阶段，在未来的版本中可能会发生变化。
+
+:::
+
+## 异步智能体
+
+默认情况下，所有智能体调用均在智能体系统根智能体的同一线程中执行，因此属于同步执行模式——智能体系统需等待当前智能体完成后，方可继续执行下一个智能体。但在多数场景下，这种同步等待并非必要，异步调用智能体可使系统执行无需阻塞等待该智能体完成，从而提升执行效率。
+
+通过智能体构建器的 `async` 方法可将智能体标记为异步。标记后，该智能体的调用将在独立线程中执行，智能体系统的主流程可继续推进，无需等待其完成。异步智能体的执行结果完成后会立即存入 `AgenticScope`，仅当后续其他智能体调用需将该结果作为输入时，`AgenticScope` 才会阻塞等待其执行完成。
+
+例如，对于彼此独立的 `FoodExpert` 和 `MovieExpert` 智能体，即使在顺序工作流中使用，将其标记为异步后也可实现并行执行。
+
+<details>
+<summary>异步智能体示例</summary>
+
+```java title="AsyncSequenceWorkflowExample.java"
+import dev.langchain4j.agentic.Agent;
+import dev.langchain4j.agentic.AgenticServices;
+import dev.langchain4j.agentic.scope.AgenticScope;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class AsyncSequenceWorkflowExample {
+
+    public static class EveningPlan {
+
+        private final String movie;
+        private final String meal;
+
+        public EveningPlan(String movie, String meal) {
+            this.movie = movie;
+            this.meal = meal;
+        }
+
+        public String getMovie() {
+            return movie;
+        }
+
+        public String getMeal() {
+            return meal;
+        }
+
+        @Override
+        public String toString() {
+            return "电影：" + movie + " | 餐食：" + meal;
+        }
+
+    }
+
+    public interface FoodExpert {
+
+        @UserMessage("""
+                你是一位出色的晚间计划专家。
+                请根据给定的心情推荐3个匹配的餐食。
+                心情：{{mood}}
+                对于每个餐食，只需提供餐食名称。
+                提供一个包含3个项目的列表，不要返回其他内容。
+                """)
+        @Agent
+        List<String> findMeal(@V("mood") String mood);
+
+    }
+
+    public interface MovieExpert {
+
+        @UserMessage("""
+                你是一位出色的晚间计划专家。
+                请根据给定的心情推荐3个匹配的电影。
+                心情：{{mood}}
+                提供一个包含3个项目的列表，不要返回其他内容。
+                """)
+        @Agent
+        List<String> findMovie(@V("mood") String mood);
+
+    }
+
+    public interface EveningPlannerAgent {
+
+        List<EveningPlan> plan(@V("mood") String mood);
+
+    }
+
+    public static void main(String[] args) {
+        // 创建对话模型
+        ChatModel baseModel = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
+                .logRequests(true)
+                .logResponses(true)
+                .build();
+
+        // 创建食物专家智能体（异步执行）
+        FoodExpert foodExpert = AgenticServices
+                .agentBuilder(FoodExpert.class)
+                .chatModel(baseModel)
+                .async(true)
+                .outputKey("meals")
+                .build();
+
+        // 创建电影专家智能体（异步执行）
+        MovieExpert movieExpert = AgenticServices
+                .agentBuilder(MovieExpert.class)
+                .chatModel(baseModel)
+                .async(true)
+                .outputKey("movies")
+                .build();
+
+        // 创建顺序工作流：先执行食物推荐，再执行电影推荐，然后组合结果
+        EveningPlannerAgent eveningPlannerAgent = AgenticServices
+                .sequenceBuilder(EveningPlannerAgent.class)
+                .subAgents(foodExpert, movieExpert)
+                .outputKey("plans")
+                .output((AgenticScope agenticScope) -> {
+                    List<String> movies = agenticScope.readState("movies", List.of());
+                    List<String> meals = agenticScope.readState("meals", List.of());
+
+                    List<EveningPlan> moviesAndMeals = new ArrayList<>();
+                    for (int i = 0; i < movies.size(); i++) {
+                        if (i >= meals.size()) {
+                            break;
+                        }
+                        moviesAndMeals.add(new EveningPlan(movies.get(i), meals.get(i)));
+                    }
+                    return moviesAndMeals;
+                })
+                .build();
+
+        // 执行工作流
+        List<EveningPlan> plans = eveningPlannerAgent.plan("浪漫");
+
+        // 输出结果
+        System.out.println("=== 晚间计划推荐 ===");
+        for (int i = 0; i < plans.size(); i++) {
+            System.out.println("方案 " + (i + 1) + ": " + plans.get(i));
+        }
+        System.out.println();
+        System.out.println("=== 工作流执行完成 ===");
+    }
+
+}
+```
+
+</details>
+
+## 流式智能体
+
+为支持流式传输，可创建返回 `TokenStream` 类型结果的智能体。
+
+```java title="StreamingCreativeWriter.java"
+public interface StreamingCreativeWriter {
+
+    @UserMessage("""
+            你是一位创意作家。
+            请围绕给定主题生成一个不超过3句话的故事草稿。
+            只返回故事内容，不要返回其他内容。
+            主题：{{topic}}
+            """)
+    @Agent("根据给定主题生成故事草稿")
+    TokenStream generateStory(@V("topic") String topic);
+
+}
+```
+
+需将其配置为使用 `StreamingChatModel`，从而能够在结果生成过程中实时消费数据，无需等待智能体调用完全结束。
+
+```java
+StreamingCreativeWriter creativeWriter = AgenticServices
+        .agentBuilder(StreamingCreativeWriter.class)
+        .streamingChatModel(streamingBaseModel())
+        .outputKey("story")
+        .build();
+
+TokenStream tokenStream = creativeWriter.generateStory("龙与巫师");
+```
+
+在智能体系统内部使用时，流式智能体仅当作为最后一个被调用的智能体时，才能将其流式响应传播至整个系统。其他场景下，其行为与异步智能体一致，后续智能体需等待其流式响应完全完成后，方可获取并使用其结果。
+
+例如，以下 `StreamingReviewedWriter` 智能体：
+
+```java
+public interface StreamingReviewedWriter {
+
+    @Agent
+    TokenStream writeStory(@V("topic") String topic, @V("audience") String audience, @V("style") String style);
+
+}
+```
+
+通过 3 个流式智能体的序列实现：
+
+```java
+StreamingCreativeWriter creativeWriter = AgenticServices
+        .agentBuilder(StreamingCreativeWriter.class)
+        .streamingChatModel(streamingBaseModel())
+        .outputKey("story")
+        .build();
+
+StreamingAudienceEditor audienceEditor = AgenticServices
+        .agentBuilder(StreamingAudienceEditor.class)
+        .streamingChatModel(streamingBaseModel())
+        .outputKey("story")
+        .build();
+
+StreamingStyleEditor styleEditor = AgenticServices
+        .agentBuilder(StreamingStyleEditor.class)
+        .streamingChatModel(streamingBaseModel())
+        .outputKey("story")
+        .build();
+
+StreamingReviewedWriter novelCreator = AgenticServices
+        .sequenceBuilder(StreamingReviewedWriter.class)
+        .subAgents(creativeWriter, audienceEditor, styleEditor)
+        .outputKey("story")
+        .build();
+```
+
+当调用此 `novelCreator` 智能体时：
+
+```java
+TokenStream tokenStream = novelCreator.writeStory("龙与巫师", "青年", "奇幻");
+```
+
+前两个智能体的流式响应会在后续智能体调用启动前被内部完全消费，仅最后一个 `StyleEditor` 智能体的流式响应会作为整个 `novelCreator` 智能体的流式响应向外传播。
+
+## 错误处理
+
+在复杂的智能体系统中，易出现各类异常场景，例如智能体无法生成有效结果、外部工具不可用、智能体执行过程中发生意外错误等。
+
+为此，`errorHandler` 方法支持为智能体系统配置错误处理器，该处理器为一个函数，可将 `ErrorContext`（定义如下）转换为 `ErrorRecoveryResult` 类型结果：
+
+```java
+record ErrorContext(String agentName, AgenticScope agenticScope, AgentInvocationException exception) { }
+```
+
+`ErrorRecoveryResult` 支持以下 3 种错误恢复策略：
+
+1. `ErrorRecoveryResult.throwException()`：默认行为，直接将异常向上传播至根调用者；
+
+2. `ErrorRecoveryResult.retry()`：重试智能体调用（可在执行纠正措施后触发）；
+
+3. `ErrorRecoveryResult.result(Object result)`：忽略异常，返回指定结果作为失败智能体的执行结果。
+
+例如，若从顺序工作流的第一个示例中省略必要参数：
+
+```java
+UntypedAgent novelCreator = AgenticServices
+        .sequenceBuilder()
+        .subAgents(creativeWriter, audienceEditor, styleEditor)
+        .outputKey("story")
+        .build();
+
+Map<String, Object> input = Map.of(
+        // 缺少 "topic" 条目以触发错误
+        // "topic", "龙与巫师",
+        "style", "奇幻",
+        "audience", "青年"
+);
+```
+
+执行时会抛出如下异常：
+
+```Plain Text
+
+dev.langchain4j.agentic.agent.MissingArgumentException: Missing argument: topic
+```
+
+为解决该问题，可通过配置错误处理器实现异常恢复，在 `agenticScope` 中补充缺失的参数，具体实现如下：
+
+<details>
+<summary>错误处理示例</summary>
+
+```java title="ErrorHandlingWorkflowExample.java"
+import dev.langchain4j.agentic.Agent;
+import dev.langchain4j.agentic.AgenticServices;
+import dev.langchain4j.agentic.UntypedAgent;
+import dev.langchain4j.agentic.agent.ErrorRecoveryResult;
+import dev.langchain4j.agentic.agent.MissingArgumentException;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
+
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+public class ErrorHandlingWorkflowExample {
+
+    public interface CreativeWriter {
+
+        @UserMessage("""
+                你是一位创意作家。
+                请围绕给定主题生成一个不超过3句话的故事草稿。
+                只返回故事内容，不要返回其他内容。
+                主题：{{topic}}
+                """)
+        @Agent("根据给定主题生成故事草稿")
+        String generateStory(@V("topic") String topic);
+
+    }
+    
+    public interface AudienceEditor {
+
+        @UserMessage("""
+                你是一位专业编辑。
+                分析并重写以下故事，使其更好地符合目标受众：{{audience}}。
+                只返回故事内容，不要返回其他内容。
+                故事内容："{{story}}"
+                """)
+        @Agent("编辑故事以更好地适应给定的目标受众")
+        String editStory(@V("story") String story, @V("audience") String audience);
+
+    }
+
+    public interface StyleEditor {
+
+        @UserMessage("""
+                你是一位专业编辑。
+                分析并重写以下故事，使其更好地符合并更连贯地体现 {{style}} 风格。
+                只返回故事内容，不要返回其他内容。
+                故事内容："{{story}}"
+                """)
+        @Agent("编辑故事以更好地适应给定的风格")
+        String editStory(@V("story") String story, @V("style") String style);
+
+    }
+
+    public static void main(String[] args) {
+        // 创建对话模型
+        ChatModel baseModel = OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
+                .logRequests(true)
+                .logResponses(true)
+                .build();
+
+        // 创建创意作家智能体
+        CreativeWriter creativeWriter = AgenticServices
+                .agentBuilder(CreativeWriter.class)
+                .chatModel(baseModel)
+                .outputKey("story")
+                .build();
+
+        // 创建受众编辑智能体
+        AudienceEditor audienceEditor = AgenticServices
+                .agentBuilder(AudienceEditor.class)
+                .chatModel(baseModel)
+                .outputKey("story")
+                .build();
+
+        // 创建风格编辑智能体
+        StyleEditor styleEditor = AgenticServices
+                .agentBuilder(StyleEditor.class)
+                .chatModel(baseModel)
+                .outputKey("story")
+                .build();
+
+        // 用于检测 errorHandler 是否被调用
+        AtomicBoolean errorRecoveryCalled = new AtomicBoolean(false);
+
+        // 创建顺序工作流：按顺序执行三个智能体，并配置错误处理器
+        UntypedAgent novelCreator = AgenticServices.sequenceBuilder()
+                .subAgents(creativeWriter, audienceEditor, styleEditor)
+                .errorHandler(errorContext -> {
+                    // 检查是否是 generateStory 代理缺少 topic 参数
+                    if (errorContext.agentName().equals("generateStory") &&
+                            errorContext.exception() instanceof MissingArgumentException mEx &&
+                            mEx.argumentName().equals("topic")) {
+
+                        // 向 AgenticScope 写入缺失的参数
+                        errorContext.agenticScope().writeState("topic", "龙与巫师");
+
+                        // 标记错误恢复已被调用
+                        errorRecoveryCalled.set(true);
+
+                        // 返回重试结果，让代理重新执行
+                        return ErrorRecoveryResult.retry();
+                    }
+
+                    // 对于其他错误，抛出异常
+                    return ErrorRecoveryResult.throwException();
+                })
+                .outputKey("story")
+                .build();
+
+        // 准备输入参数（故意缺少 "topic" 参数以触发错误）
+        Map<String, Object> input = Map.of(
+                // "topic", "龙与巫师",
+                "audience", "青年",
+                "style", "奇幻"
+        );
+
+        System.out.println("=== 开始执行工作流（缺少 topic 参数）===");
+        System.out.println("输入参数：" + input);
+        System.out.println();
+
+        try {
+            // 执行工作流
+            String story = (String) novelCreator.invoke(input);
+
+            // 输出结果
+            System.out.println("=== 最终生成的故事 ===");
+            System.out.println(story);
+            System.out.println();
+
+            // 检查错误处理器是否被调用
+            if (errorRecoveryCalled.get()) {
+                System.out.println("✓ 错误处理器成功恢复缺失的 topic 参数并重试");
+            } else {
+                System.out.println("⚠ 错误处理器未被触发");
+            }
+
+            System.out.println();
+            System.out.println("=== 工作流执行完成 ===");
+        } catch (Exception e) {
+            System.err.println("=== 工作流执行失败 ===");
+            System.err.println("错误信息：" + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+}
+```
+
+</details>
+
+## 可观测性
+
+跟踪并记录智能体的调用过程，对于调试及理解智能体系统的整体聚合行为具有关键意义。为此，`langchain4j-agentic` 模块支持通过智能体构建器的 `listener` 方法注册 `AgentListener` 监听器，该监听器可接收所有智能体调用及其执行结果的通知，其定义如下：
+
+```java
+public interface AgentListener {
+
+    default void beforeAgentInvocation(AgentRequest agentRequest) { }
+    default void afterAgentInvocation(AgentResponse agentResponse) { }
+    default void onAgentInvocationError(AgentInvocationError agentInvocationError) { }
+
+    default void afterAgenticScopeCreated(AgenticScope agenticScope) { }
+    default void beforeAgenticScopeDestroyed(AgenticScope agenticScope) { }
+
+    default void beforeToolExecution(BeforeToolExecution beforeToolExecution) { }
+    default void afterToolExecution(ToolExecution toolExecution) { }
+
+    default boolean inheritedBySubagents() {
+        return false;
+    }
+
+}
+```
+
+该接口的所有方法均提供默认空实现，因此可仅实现所需方法。这一设计也确保未来版本新增方法时，不会破坏现有实现的兼容性。
+
+例如，以下 `CreativeWriter` 智能体的配置会在调用时输出日志，并记录生成的故事内容：
+
+```java
+CreativeWriter creativeWriter = AgenticServices.agentBuilder(CreativeWriter.class)
+        .chatModel(baseModel())
+        .outputKey("story")
+        .listener(new AgentListener() {
+            @Override
+            public void beforeAgentInvocation(AgentRequest request) {
+                System.out.println("调用 CreativeWriter，主题：" + request.inputs().get("topic"));
+            }
+        
+            @Override
+            public void afterAgentInvocation(AgentResponse response) {
+                System.out.println("CreativeWriter 生成的故事：" + response.output());
+            }
+        })
+        .build();
+```
+
+上述监听器方法分别接收 `AgentRequest` 和 `AgentResponse` 作为参数，包含智能体调用的关键信息（如智能体名称、输入参数、输出结果、关联的 `AgenticScope` 实例等）。需注意，这些方法与智能体调用在同一线程中执行，属于同步操作，因此不应在方法内执行长时间阻塞任务。
+
+`AgentListener` 具有两个核心特性：
+
+- **可组合性**：支持通过多次调用 `listener` 方法为同一智能体注册多个监听器，监听器将按注册顺序接收通知。
+
+- **可选继承性**：默认情况下仅对直接注册的智能体生效，若需子智能体继承，可将 `inheritedBySubagents` 方法返回值设为 `true`。此时，顶级智能体注册的监听器会接收其所有层级子智能体的调用通知，并与子智能体自身注册的监听器组合生效。
+
+### 监控
+
+基于 `AgentListener` 接口提供的可观测性能力，`langchain4j-agentic` 模块内置了 `AgentMonitor` 实现类，该类默认支持子智能体继承，其核心作用是将所有智能体调用记录在内存树结构中，便于在智能体系统执行过程中或执行后，查看调用序列及结果详情。可通过智能体构建器的 `listener` 方法，将该监控器注册到智能体系统的根智能体。
+
+以下示例将结合循环工作流（生成并迭代优化故事，直至满足目标风格质量要求），注册包含 `AgentMonitor` 在内的多个监听器：
+
+<details>
+<summary>监控示例</summary>
+
+```java title="AgentMonitorExample.java"
+import dev.langchain4j.agentic.AgenticServices;
+import dev.langchain4j.agentic.Agent;
+import dev.langchain4j.agentic.UntypedAgent;
+import dev.langchain4j.agentic.observability.AgentListener;
+import dev.langchain4j.agentic.observability.AgentMonitor;
+import dev.langchain4j.agentic.observability.AgentRequest;
+import dev.langchain4j.agentic.observability.AgentResponse;
+import dev.langchain4j.agentic.observability.MonitoredExecution;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
+
+import java.util.Map;
+
+public class AgentMonitorExample {
+
+    public interface CreativeWriter {
+
+        @UserMessage("""
+                你是一位创意作家。
+                请围绕给定主题生成一个不超过3句话的故事草稿。
+                只返回故事内容，不要返回其他内容。
+                主题：{{topic}}
+                """)
+        @Agent("根据给定主题生成故事草稿")
+        String generateStory(@V("topic") String topic);
+
+    }
+
+    public interface StyleEditor {
+
+        @UserMessage("""
+                你是一位专业编辑。
+                分析并重写以下故事，使其更好地符合并更连贯地体现 {{style}} 风格。
+                只返回故事内容，不要返回其他内容。
+                故事内容："{{story}}"
+                """)
+        @Agent("编辑故事以更好地适应给定的风格")
+        String editStory(@V("story") String story, @V("style") String style);
+
+    }
+
+    public interface StyleScorer {
+
+        @UserMessage("""
+                你是一位严格的评论家。
+                请根据以下故事与风格 '{{style}}' 的契合程度，给出一个 0.0 到 1.0 之间的评分。
+                只返回评分数字，不要返回其他内容。
+                故事内容："{{story}}"
+                """)
+        @Agent("根据故事与给定风格的契合程度进行评分")
+        Double scoreStyle(@V("story") String story, @V("style") String style);
+
+    }
+
+    private static ChatModel baseModel() {
+        return OpenAiChatModel.builder()
+                .baseUrl("https://api.deepseek.com/v1")
+                .apiKey(System.getenv("DEEPSEEK_API_KEY"))
+                .modelName("deepseek-chat")
+                .logRequests(true)
+                .logResponses(true)
+                .build();
+    }
+
+    public static void main(String[] args) {
+        ChatModel baseModel = baseModel();
+
+        // 创建 AgentMonitor 实例
+        AgentMonitor monitor = new AgentMonitor();
+
+        // 创建创意作家智能体，注册监听器
+        CreativeWriter creativeWriter = AgenticServices.agentBuilder(CreativeWriter.class)
+                .chatModel(baseModel)
+                .outputKey("story")
+                .listener(new AgentListener() {
+                    @Override
+                    public void beforeAgentInvocation(AgentRequest request) {
+                        System.out.println("调用 CreativeWriter，主题：" + request.inputs().get("topic"));
+                    }
+                })
+                .build();
+
+        // 创建风格编辑智能体
+        StyleEditor styleEditor = AgenticServices.agentBuilder(StyleEditor.class)
+                .chatModel(baseModel)
+                .outputKey("story")
+                .build();
+
+        // 创建风格评分智能体
+        StyleScorer styleScorer = AgenticServices.agentBuilder(StyleScorer.class)
+                .name("styleScorer")
+                .chatModel(baseModel)
+                .outputKey("score")
+                .build();
+
+        // 创建循环工作流：迭代优化故事风格
+        UntypedAgent styleReviewLoop = AgenticServices.loopBuilder()
+                .subAgents(styleScorer, styleEditor)
+                .maxIterations(5)
+                .exitCondition(agenticScope -> agenticScope.readState("score", 0.0) >= 0.8)
+                .build();
+
+        // 创建顺序工作流：先生成故事，再优化风格
+        UntypedAgent styledWriter = AgenticServices.sequenceBuilder()
+                .subAgents(creativeWriter, styleReviewLoop)
+                .listener(monitor)  // 注册 AgentMonitor
+                .listener(new AgentListener() {
+                    @Override
+                    public void afterAgentInvocation(AgentResponse response) {
+                        if (response.agentName().equals("styleScorer")) {
+                            System.out.println("当前得分：" + response.output());
+                        }
+                    }
+
+                    @Override
+                    public boolean inheritedBySubagents() {
+                        return true;
+                    }
+                })
+                .outputKey("story")
+                .build();
+
+        // 执行工作流
+        Map<String, Object> input = Map.of(
+                "topic", "龙与巫师",
+                "style", "喜剧");
+        String story = (String) styledWriter.invoke(input);
+
+        System.out.println("\n=== 最终生成的故事 ===");
+        System.out.println(story);
+
+        // 从监控器检索记录的执行并打印
+        System.out.println("\n=== 监控执行记录 ===");
+        if (!monitor.successfulExecutions().isEmpty()) {
+            MonitoredExecution execution = monitor.successfulExecutions().get(0);
+            System.out.println(execution);
+        } else {
+            System.out.println("没有成功的执行记录");
+        }
+    }
+
+}
+```
+
+</details>
+
+第一个监听器直接注册在 `creativeWriter` 智能体上，因此仅当该智能体被调用时，才会记录待生成故事的主题。第二个监听器注册在顶级 `styledWriter` 智能体上，且支持子智能体继承，因此该监听器的 `afterAgentInvocation` 方法会检查被调用的智能体是否为 `styleScorer`，并仅在此时记录故事的当前风格评分。
+
+`AgentMonitor` 实例同样注册在 `styledWriter` 顶级智能体上，会自动与其他两个监听器组合生效，从而跟踪整个智能体系统的所有调用行为。
+
+调用 `styledWriter` 智能体时：
+
+```Java
+Map<String, Object> input = Map.of(
+        "topic", "龙与巫师",
+        "style", "喜剧");
+String story = styledWriter.invoke(input);
+```
+
+`AgentMonitor` 会以树结构记录所有智能体调用，包含每次调用的开始时间、结束时间、执行时长、输入参数及输出结果。可通过以下代码检索并查看执行记录：
+
+```Java
+MonitoredExecution execution = monitor.successfulExecutions().get(0);
+System.out.println(execution);
+```
+
+输出结果将展示故事生成与优化过程中的嵌套智能体调用序列：
+
+```
+AgentInvocation{agent=Sequential, startTime=2025-12-04T17:23:45.684601233, finishTime=2025-12-04T17:25:31.310476077, duration=105625 ms, inputs={style=comedy, topic=dragons and wiz...}, output=In the shadowy ...}
+|=> AgentInvocation{agent=generateStory, startTime=2025-12-04T17:23:45.687031946, finishTime=2025-12-04T17:23:53.216629832, duration=7529 ms, inputs={topic=dragons and wiz...}, output=In the shadowed...}
+|=> AgentInvocation{agent=reviewLoop, startTime=2025-12-04T17:23:53.218004760, finishTime=2025-12-04T17:25:31.310442197, duration=98092 ms, inputs={score=0.85, topic=dragons and wiz..., style=comedy, story=In the shadowy ...}, output=null}
+    |=> AgentInvocation{agent=scoreStyle, startTime=2025-12-04T17:23:53.218606335, finishTime=2025-12-04T17:23:58.900747685, duration=5682 ms, inputs={style=comedy, story=In the shadowed...}, output=0.25}
+    |=> AgentInvocation{agent=editStory, startTime=2025-12-04T17:23:58.901041911, finishTime=2025-12-04T17:24:58.130857588, duration=59229 ms, inputs={style=comedy, story=In the shadowed...}, output=In the shadowy ...}
+    |=> AgentInvocation{agent=scoreStyle, startTime=2025-12-04T17:24:58.130980855, finishTime=2025-12-04T17:25:31.310076714, duration=33179 ms, inputs={style=comedy, story=In the shadowy ...}, output=0.85}
+```
+
+## 声明式 API
+
+前文讨论的所有工作流模式均支持通过声明式 API 进行定义，该 API 可使工作流定义更简洁、可读性更强。`langchain4j-agentic` 模块提供了一组注解，用于以声明式风格定义智能体及其工作流。
+
+例如，并行工作流部分中通过编程式方式定义的 `EveningPlannerAgent`，可使用声明式 API 重写如下：
+
+```java
+public interface EveningPlannerAgent {
+
+    @ParallelAgent(outputKey = "plans", 
+            subAgents = { FoodExpert.class, MovieExpert.class })
+    List<EveningPlan> plan(@V("mood") String mood);
+
+    @ParallelExecutor
+    static Executor executor() {
+        return Executors.newFixedThreadPool(2);
+    }
+
+    @Output
+    static List<EveningPlan> createPlans(@V("movies") List<String> movies, @V("meals") List<String> meals) {
+        List<EveningPlan> moviesAndMeals = new ArrayList<>();
+        for (int i = 0; i < movies.size(); i++) {
+            if (i >= meals.size()) {
+                break;
+            }
+            moviesAndMeals.add(new EveningPlan(movies.get(i), meals.get(i)));
+        }
+        return moviesAndMeals;
+    }
+
+}
+```
+
+其中，通过 `@Output` 注解标记的静态方法，用于定义子智能体输出结果的聚合逻辑，其实现效果与向 `output` 方法传递 `AgenticScope` 函数的方式完全一致。
+
+接口定义完成后，可通过 `AgenticServices.createAgenticSystem()` 方法创建 `EveningPlannerAgent` 实例，使用方式与前文一致：
+
+```java
+EveningPlannerAgent eveningPlannerAgent = AgenticServices
+        .createAgenticSystem(EveningPlannerAgent.class, BASE_MODEL);
+List<EveningPlan> plans = eveningPlannerAgent.plan("romantic");
+```
+
+上述代码中，`AgenticServices.createAgenticSystem()` 方法传入的 `ChatModel` 会默认用于创建该智能体系统中的所有子智能体。若需为特定子智能体指定不同的 `ChatModel`，可在其接口定义中添加标注 `@ChatModelSupplier` 的静态方法，返回该智能体所需的 `ChatModel` 实例。例如，`FoodExpert` 智能体可自定义 `ChatModel` 如下：
+
+```java
+public interface FoodExpert {
+
+    @UserMessage("""
+            你是一位出色的晚间计划专家。
+            请根据给定的心情推荐3个匹配的餐食。
+            心情：{{mood}}
+            对于每个餐食，只需提供餐食名称。
+            提供一个包含3个项目的列表，不要返回其他内容。
+            """)
+    @Agent(outputKey = "meals")
+    List<String> findMeal(@V("mood") String mood);
+
+    @ChatModelSupplier
+    static ChatModel chatModel() {
+        return FOOD_MODEL;
+    }
+
+}
+```
+
+类似地，可通过在智能体接口中注解其他静态方法，声明式配置智能体的其他属性（如对话记忆、工具等）。除特殊说明外，这些静态方法均无需传入参数。支持的注解列表如下：
+
+|注解名称|描述|
+|---|---|
+|`@ChatModelSupplier`|返回当前智能体使用的 ChatModel 实例。|
+|`@ChatMemorySupplier`|返回当前智能体使用的 ChatMemory（对话记忆）实例。|
+|`@ChatMemoryProviderSupplier`|返回当前智能体使用的 ChatMemoryProvider（对话记忆提供器）实例，该方法需传入 Object 类型参数作为 memoryId（记忆ID）。|
+|`@ContentRetrieverSupplier`|返回当前智能体使用的 ContentRetriever（内容检索器）实例。|
+|`@AgentListenerSupplier`|返回当前智能体使用的 AgentListener（智能体监听器）实例。|
+|`@RetrievalAugmentorSupplier`|返回当前智能体使用的 RetrievalAugmentor（检索增强器）实例。|
+|`@ToolsSupplier`|返回当前智能体使用的工具或工具集，支持返回单个 Object 或 Object[] 类型。|
+|`@ToolProviderSupplier`|返回当前智能体使用的 ToolProvider（工具提供器）实例。|
+
+以下是声明式 API 定义条件工作流的示例，重写前文演示的 `ExpertsAgent`：
+
+```java
+public interface ExpertsAgent {
+
+    @ConditionalAgent(outputKey = "response", 
+            subAgents = { MedicalExpert.class, TechnicalExpert.class, LegalExpert.class })
+    String askExpert(@V("request") String request);
+
+    @ActivationCondition(MedicalExpert.class)
+    static boolean activateMedical(@V("category") RequestCategory category) {
+        return category == RequestCategory.MEDICAL;
+    }
+
+    @ActivationCondition(TechnicalExpert.class)
+    static boolean activateTechnical(@V("category") RequestCategory category) {
+        return category == RequestCategory.TECHNICAL;
+    }
+
+    @ActivationCondition(LegalExpert.class)
+    static boolean activateLegal(@V("category") RequestCategory category) {
+        return category == RequestCategory.LEGAL;
+    }
+
+}
+```
+
+其中，`@ActivationCondition` 注解的参数指定目标智能体类，当该注解标记的方法返回 `true` 时，对应的智能体将被激活。
+
+需注意，编程式与声明式风格可混合使用：智能体可部分通过注解配置，部分通过智能体构建器配置；也可完全通过声明式定义智能体，再通过编程式方式构建智能体系统（将智能体类作为子智能体）。例如，先声明式定义 `CreativeWriter` 和 `AudienceEditor` 智能体：
+
+```java
+public interface CreativeWriter {
+
+    @UserMessage("""
+            你是一位创意作家。
+            请围绕给定主题生成一个不超过3句话的故事草稿。
+            只返回故事内容，不要返回其他内容。
+            主题：{{topic}}
+            """)
+    @Agent(description = "根据给定主题生成故事草稿", outputKey = "story")
+    String generateStory(@V("topic") String topic);
+
+    @ChatModelSupplier
+    static ChatModel chatModel() {
+        return baseModel();
+    }
+
+}
+
+public interface AudienceEditor {
+
+    @UserMessage("""
+            你是一位专业编辑。
+            分析并重写以下故事，使其更好地符合目标受众：{{audience}}。
+            只返回故事内容，不要返回其他内容。
+            故事内容："{{story}}"
+            """)
+    @Agent(description = "编辑故事以更好地适应给定的目标受众", outputKey = "story")
+    String editStory(@V("story") String story, @V("audience") String audience);
+
+    @ChatModelSupplier
+    static ChatModel chatModel() {
+        return baseModel();
+    }
+
+}
+```
+
+再通过编程式方式将其按顺序组合为工作流：
+
+```java
+UntypedAgent novelCreator = AgenticServices.sequenceBuilder()
+        .subAgents(CreativeWriter.class, AudienceEditor.class)
+        .outputKey("story")
+        .build();
+
+Map<String, Object> input = Map.of(
+        "topic", "龙与巫师",
+        "audience", "青年"
+);
+
+String story = (String) novelCreator.invoke(input);
+```
+
+## 总结
+
+本文详细介绍了 LangChain4j 智能体的核心执行特性及可观测性等特性：
+
+- **异步智能体**：支持智能体在独立线程中执行，提升系统并发处理能力；
+
+- **流式智能体**：提供流式响应能力，优化用户交互体验；
+
+- **错误处理**：支持三种错误恢复策略，增强系统稳定性与健壮性；
+
+- **可观测性**：通过 `AgentListener` 与 `AgentMonitor`，实现智能体执行过程的全面跟踪；
+
+- **声明式 API**：基于注解简化工作流定义，提升开发效率与代码可读性。
+
+这些特性使 LangChain4j 智能体系统具备更优的健壮性、执行效率与可监控性。
+
+在下一篇文章中，我们将介绍强类型输入输出、记忆管理和监督者模式等高级特性。
+
+## 参考文档
+
+- [LangChain4j 官方文档 - Agents](https://docs.langchain4j.dev/tutorials/agents)
